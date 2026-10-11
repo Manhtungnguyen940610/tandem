@@ -1266,3 +1266,81 @@ describe("#2125 — a crash restart whose integrations read fails", () => {
     expect(sup.status()).toEqual({ running: false, lastError: "circuit-open" });
   });
 });
+
+// The status route matches MCP connections opened at or after this, so a stale
+// or zero value would let the previous child's leftover entry turn the pill green.
+describe("status().spawnedAt — when the current child started", () => {
+  function spawnedAt(sup: Supervisor): number | undefined {
+    const status = sup.status();
+    return status.running ? status.spawnedAt : undefined;
+  }
+
+  it("is stamped at each spawn, not once per supervisor", async () => {
+    const { sup } = makeSupervisor();
+    const before = Date.now();
+    await sup.startFresh(cwdDir);
+    const first = spawnedAt(sup);
+    expect(first).toBeGreaterThanOrEqual(before);
+    expect(first).toBeLessThanOrEqual(Date.now());
+
+    await new Promise((r) => setTimeout(r, 5));
+    const beforeSecond = Date.now();
+    await sup.startFresh(cwdDir);
+    expect(spawnedAt(sup)).toBeGreaterThanOrEqual(beforeSecond);
+  });
+});
+
+describe("status().busy — the launched child's turn-in-flight flag", () => {
+  function busy(sup: Supervisor): boolean | undefined {
+    const status = sup.status();
+    return status.running ? status.busy : undefined;
+  }
+
+  it("is true while the bootstrap turn runs and false once its result arrives", async () => {
+    const { sup } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    expect(busy(sup)).toBe(true);
+    pushJson(child1, RESULT_OK);
+    await settle();
+    expect(busy(sup)).toBe(false);
+  });
+
+  it("goes true again on a wake written to an idle child", async () => {
+    const { sup, emit } = makeSupervisor();
+    await freshChildWithHeldWake(sup, emit);
+    expect(busy(sup)).toBe(true);
+  });
+
+  it("stays true across a result when a wake was coalesced behind the turn", async () => {
+    const { sup, emit } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    // Mid-bootstrap: this event can only set `pendingWake`.
+    emit(annotationEvent());
+    pushJson(child1, RESULT_OK);
+    await settle();
+    // `flushPendingWake` wrote the owed wake on that result, re-raising the flag.
+    expect(texts(child1)).toEqual([SUPERVISOR_INITIAL_PROMPT, SUPERVISOR_WAKE_PROMPT]);
+    expect(busy(sup)).toBe(true);
+  });
+
+  it("clears when the latch expires with nothing owed", async () => {
+    const { sup } = makeSupervisor({ wakeLatchMs: 100 });
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], INIT);
+    expect(busy(sup)).toBe(true);
+    await waitFor(() => busy(sup) === false, "the latch expiry", 2_000);
+  });
+
+  it("clears on a failed write while the child is still up", async () => {
+    // Without this, a dead pipe would leave the pill pulsing until the latch.
+    const { sup } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    expect(busy(sup)).toBe(true);
+    failCallbacksOnly(held(child1));
+    expect(sup.status().running).toBe(true);
+    expect(busy(sup)).toBe(false);
+  });
+});

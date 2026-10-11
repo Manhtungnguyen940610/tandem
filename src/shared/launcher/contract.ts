@@ -44,6 +44,16 @@ export type LauncherStatus =
       /** Always the literal string "<set>" — the real UUID never crosses the wire. */
       sessionId: "<set>";
       resuming: boolean;
+      /** Loopback-only. Tandem's Claude has a turn in flight — see
+       * `SupervisorStatus.busy`. Optional because an older server omits it,
+       * which reads as not busy. */
+      busy?: boolean;
+      /** Loopback-only. The server matched a live MCP connection to THIS
+       * spawn of Tandem's Claude (its session id, opened since the spawn, with
+       * its stream open). Only reachable when the child's connection forwards
+       * its Claude session id (the plugin's stdio bridge); absent or false
+       * means "can't confirm", not "not connected". */
+      attached?: boolean;
       /** Loopback-only. `null` when last refresh succeeded. */
       skillRefresh?: SkillRefreshError | null;
     };

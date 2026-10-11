@@ -53,7 +53,10 @@ import type { DiagnosticsHandlerDeps } from "./routes/diagnostics.js";
 import { makeHealthHandler } from "./routes/health.js";
 import { installSchemaDialectStrip } from "./schema-dialect.js";
 import {
+  countDistinctClients,
   createMcpSessionRegistry,
+  hasLiveEntryFor,
+  isLiveEntry,
   type McpSessionEntry,
   type McpSessionRegistry,
 } from "./transport-registry.js";
@@ -214,7 +217,7 @@ export function findLicensePath(startDir: string): string | undefined {
 // transport, so servers cannot be shared across sessions — see
 // transport-registry.ts for why this is "Shape 2" and not a singleton.
 //
-// Module-level because the exported closeMcpSession/getMcpSessionCount are
+// Module-level because the exported closeMcpSession/getMcpClientCount are
 // called from index.ts and the /health route. Null in stdio mode, which has no
 // registry. `idleReaper` is held alongside so closeMcpSession can undo
 // everything startMcpServerHttp set up — an interval nobody can clear outlives
@@ -514,9 +517,28 @@ export async function closeMcpSession(): Promise<void> {
   await sessions?.closeAll();
 }
 
-/** Live MCP session count. Exported for `/health`'s loopback-only `hasSession`. */
-export function getMcpSessionCount(): number {
-  return sessions?.size ?? 0;
+/** Distinct LIVE MCP clients (`isLiveEntry`) — `/health`'s loopback-only
+ * `sessionCount`. See `countDistinctClients` for what it can still miscount. */
+export function getMcpClientCount(): number {
+  if (!sessions) return 0;
+  // One `now` for the whole pass, and never `filter(isLiveEntry)` bare: filter
+  // would pass the array index as `now` and every entry would read live.
+  const now = Date.now();
+  return countDistinctClients(sessions.list().filter((e) => isLiveEntry(e, now)));
+}
+
+/** Whether ANY MCP session is in the registry, live or left over — `/health`'s
+ * `hasSession`, which readiness, `doctor` and the setup wizard read. */
+export function hasAnyMcpSession(): boolean {
+  return (sessions?.size ?? 0) > 0;
+}
+
+/** Whether a live MCP connection from `claudeSessionId`, opened at or after
+ * `sinceMs`, exists — the launcher status route's `attached`. See
+ * `hasLiveEntryFor`. Exported (rather than built inline at the route wiring) so
+ * a test can reach it against a real registry. */
+export function isClaudeSessionAttached(claudeSessionId: string, sinceMs: number): boolean {
+  return sessions ? hasLiveEntryFor(sessions.list(), claudeSessionId, sinceMs) : false;
 }
 
 /**
@@ -875,7 +897,8 @@ export async function startMcpServerHttp(
     lanAwareApiMiddleware,
     makeHealthHandler({
       version: APP_VERSION,
-      hasSession: () => getMcpSessionCount() > 0,
+      hasSession: hasAnyMcpSession,
+      sessionCount: getMcpClientCount,
       getSubscriberCount,
       getPushLiveness: getPushConsumerLiveness,
       getDeliveryState: (externalConsumerCount) =>
@@ -975,6 +998,7 @@ export async function startMcpServerHttp(
       startSupervisor: launcher.startSupervisor,
       store: createIntegrationsStore(resolveAppDataDir()),
       getSkillRefreshError,
+      isClaudeSessionAttached,
       // Tandem's own auto-opened documents. `welcome.md` opens on first run and
       // `CHANGELOG.md` after every upgrade, both from inside the app bundle —
       // which on Windows sits under `%LOCALAPPDATA%`, i.e. INSIDE the user's

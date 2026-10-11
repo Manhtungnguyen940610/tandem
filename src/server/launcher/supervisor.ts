@@ -383,6 +383,26 @@ export type SupervisorStatus =
       cwd: string;
       sessionId: string;
       resuming: boolean;
+      /**
+       * A turn written to the child has not yet been closed — the spawn's
+       * `turnInFlight`. Cleared by ANY `result` envelope (they carry no
+       * correlation id), by the `WAKE_LATCH_MAX_MS` expiry, by a failed write,
+       * by `onNoReceipt`, and by teardown; `flushPendingWake` can set it straight
+       * back on a `result` or a latch expiry when a wake was owed. True during
+       * the bootstrap turn and a resumed spawn's login-recheck turn too.
+       *
+       * It inherits both limitations documented on `WAKE_LATCH_MAX_MS`: a slow
+       * turn whose latch broke reads idle while still working, and a reaper that
+       * stopped forwarding reads busy until the receipt check or the latch. It
+       * says nothing about WHICH message the turn serves — the chat pickup row
+       * (#2165) owns that.
+       */
+      busy: boolean;
+      /** Wall-clock ms when this child was spawned. An MCP connection carrying
+       * `sessionId` but initialized before this belongs to an earlier child
+       * resumed under the same UUID. Internal: the status route sends only the
+       * derived `attached` boolean. */
+      spawnedAt: number;
       /** Never set: a running supervisor has, by construction, no pending
        * fatal error. Present as an explicit `undefined` so `status.lastError`
        * type-checks on the un-narrowed union. */
@@ -733,6 +753,9 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   let child: ChildProcess | null = null;
   let currentCwd: string | undefined;
   let currentSessionId: string | undefined;
+  /** Wall-clock start of the current spawn. Lets the status route tell this
+   * child's MCP connection from a previous one resumed under the same UUID. */
+  let currentSpawnedAt: number | undefined;
   let currentResuming = false;
   let stopRequested = false;
   /**
@@ -778,7 +801,12 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * Paired with `spawned` rather than stored bare so a late release from a
    * superseded spawn cannot detach the subscription of the one that replaced it.
    */
-  let activeTurnDelivery: { spawned: ChildProcess; teardown: () => void } | null = null;
+  let activeTurnDelivery: {
+    spawned: ChildProcess;
+    teardown: () => void;
+    /** This spawn's `turnInFlight` — read by `status()` as `busy`. */
+    isBusy: () => boolean;
+  } | null = null;
 
   /** Release the active spawn's subscription, whatever state its process is in.
    * Idempotent — the `exit` handler normally gets here first. */
@@ -1234,8 +1262,12 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // (see the note on SupervisorStatus).
     lastError = undefined;
 
+    // One timestamp for the spawn: the exit handler's `ranFor` and the status
+    // route's attachment match must agree on when this child started.
+    const spawnedAt = Date.now();
     currentCwd = plan.cwd;
     currentSessionId = plan.sessionId;
+    currentSpawnedAt = spawnedAt;
     currentResuming = plan.resuming;
 
     // Persist the session id on first successful spawn. We mark it as
@@ -1244,8 +1276,6 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     if (!plan.resuming) {
       writeSavedSession(plan.sessionId, plan.cwd);
     }
-
-    const spawnedAt = Date.now();
 
     // Track whether this spawn has run long enough to be considered a
     // successful resume. Fresh spawns are inherently "confirmed" — only a
@@ -1473,7 +1503,11 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (activeTurnDelivery?.spawned === spawned) activeTurnDelivery = null;
     }
 
-    activeTurnDelivery = { spawned, teardown: teardownTurnDelivery };
+    activeTurnDelivery = {
+      spawned,
+      teardown: teardownTurnDelivery,
+      isBusy: () => turnInFlight,
+    };
 
     // Written on spawn, NOT gated on the CLI's `init` line. Measured against a
     // real `claude` binary on 2026-08-04 (docs/spikes/channel-push-stream-json.md):
@@ -1655,6 +1689,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         child = null;
         currentCwd = undefined;
         currentSessionId = undefined;
+        currentSpawnedAt = undefined;
         currentResuming = false;
         // Cancel the confirmation timer — spawn errors don't flow through the
         // exit handler, so confirmTimer must be cleared here too. Inside the
@@ -2047,6 +2082,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       child = null;
       currentCwd = undefined;
       currentSessionId = undefined;
+      currentSpawnedAt = undefined;
       currentResuming = false;
       return;
     }
@@ -2092,6 +2128,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     child = null;
     currentCwd = undefined;
     currentSessionId = undefined;
+    currentSpawnedAt = undefined;
     currentResuming = false;
   }
 
@@ -2118,7 +2155,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       !child.killed &&
       child.pid !== undefined &&
       currentCwd !== undefined &&
-      currentSessionId !== undefined
+      currentSessionId !== undefined &&
+      currentSpawnedAt !== undefined
     ) {
       return {
         running: true,
@@ -2126,6 +2164,12 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         cwd: currentCwd,
         sessionId: currentSessionId,
         resuming: currentResuming,
+        // No `spawned === child` identity check: `child` and
+        // `activeTurnDelivery` are assigned in one synchronous stretch of
+        // `spawnOnce`, and every exit path tears delivery down before nulling
+        // `child`, so there is no observable window where they disagree.
+        busy: activeTurnDelivery !== null && activeTurnDelivery.isBusy(),
+        spawnedAt: currentSpawnedAt,
       };
     }
     return lastError ? { running: false, lastError } : { running: false };
