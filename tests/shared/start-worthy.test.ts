@@ -32,7 +32,7 @@ describe("isStartWorthy", () => {
     expect(isStartWorthy(reply("user", "claude"))).toBe(true);
   });
 
-  it.each([
+  const NOT_START_WORTHY: Array<[string, TandemEvent]> = [
     ["a user reply on a user-authored parent", reply("user", "user")],
     ["a user reply on an imported Word comment", reply("user", "import")],
     ["Claude's own reply", reply("claude", "claude")],
@@ -43,13 +43,18 @@ describe("isStartWorthy", () => {
     ["an edit", ev("annotation:edited")],
     ["a document opening", ev("document:opened")],
     ["a tab switch", ev("document:switched")],
-  ])("%s does not", (_label, event) => {
+  ];
+
+  it.each(NOT_START_WORTHY)("%s does not", (_label, event) => {
     expect(isStartWorthy(event)).toBe(false);
   });
 
-  it("is never wider than isWakeWorthy: what starts Claude also wakes it", () => {
-    for (const event of [ev("chat:message"), reply("user", "claude")]) {
-      expect(isWakeWorthy(event)).toBe(true);
-    }
+  it("is never wider than isWakeWorthy: whatever starts Claude also wakes it", () => {
+    const all = [
+      ev("chat:message"),
+      reply("user", "claude"),
+      ...NOT_START_WORTHY.map(([, e]) => e),
+    ];
+    for (const event of all) expect(!isStartWorthy(event) || isWakeWorthy(event)).toBe(true);
   });
 });

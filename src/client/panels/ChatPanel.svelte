@@ -158,7 +158,9 @@ $effect(() => {
 // update that adds it, and that one must still scroll.
 let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
-  const kind = pickupKind;
+  // The resume row too (#2196): its change to the taller failed row carries
+  // the remedy button, which must not land below the fold.
+  const kind = tandemClaudeResume?.kind ?? pickupKind;
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -502,10 +504,10 @@ async function exportChat() {
     {:else if tandemClaudeResume?.kind === "failed"}
       {@const remedy = tandemClaudeResume.remedy}
       <div
-        class="chat-status-row"
+        class="chat-status-row chat-status-row-wrap"
         data-testid="chat-tandem-claude-resume-failed"
         data-remedy={remedy}
-        style="color: var(--tandem-warning-fg-strong); flex-wrap: wrap;"
+        style="color: var(--tandem-warning-fg-strong);"
       >
         <span aria-hidden="true">{chatResumeLabel(tandemClaudeResume)}</span>
         <button
@@ -686,11 +688,6 @@ async function exportChat() {
     background: var(--tandem-border);
   }
 
-  /* Typing indicator dots. The bounce is looping/ambient, so under reduced
-     motion it is removed outright rather than shortened (motion.md's category
-     table) — the dots stay visible and static, which is still a legible
-     "thinking" affordance. The inline `animation-delay` on each dot survives
-     `animation: none`, but a delay with no animation-name is inert. */
   /* The pickup row and the resume rows (#2196) share everything but colour. */
   .chat-status-row {
     padding: var(--tandem-space-2) var(--tandem-space-3);
@@ -701,6 +698,15 @@ async function exportChat() {
     gap: var(--tandem-space-2);
   }
 
+  .chat-status-row-wrap {
+    flex-wrap: wrap;
+  }
+
+  /* Typing indicator dots. The bounce is looping/ambient, so under reduced
+     motion it is removed outright rather than shortened (motion.md's category
+     table) — the dots stay visible and static, which is still a legible
+     "thinking" affordance. The inline `animation-delay` on each dot survives
+     `animation: none`, but a delay with no animation-name is inert. */
   .chat-typing-dot {
     width: 5px;
     height: 5px;

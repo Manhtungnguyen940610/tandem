@@ -289,6 +289,22 @@ describe("ChatPanel — the resume row (#2196)", () => {
     expect(q("chat-pickup-live")?.textContent).toContain("Claude is resuming…");
   });
 
+  it("scrolls when resuming turns into the failed row, so its remedy is in view", async () => {
+    const spy = vi.fn();
+    const orig = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      const { rerender } = renderWithResume({ kind: "resuming", verb: "starting" });
+      await tick();
+      spy.mockClear();
+      await rerender({ tandemClaudeResume: { kind: "failed", remedy: "start" } });
+      await tick();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = orig;
+    }
+  });
+
   it("says starting for a Claude that was off", () => {
     const { q } = renderWithResume({ kind: "resuming", verb: "starting" });
     expect(q("chat-tandem-claude-resuming")?.textContent).toContain("Starting Tandem's Claude…");
@@ -300,6 +316,8 @@ describe("ChatPanel — the resume row (#2196)", () => {
     ]);
     const row = q("chat-tandem-claude-resume-failed");
     expect(row?.textContent).toContain("hasn't been answered");
+    // The row itself stays in the accessibility tree, so its button is reachable.
+    expect(row?.closest("[aria-hidden='true']")).toBeNull();
     expect(q("chat-pickup-status")).toBeNull();
     const btn = q("chat-tandem-claude-resume-remedy") as HTMLButtonElement;
     expect(btn.textContent?.trim()).toBe(AI_CTA["sign-in"].label);

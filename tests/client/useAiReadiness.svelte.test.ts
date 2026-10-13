@@ -1876,6 +1876,7 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
         [{ available: true, running: false, lastError: "cli-unusable" }, "setup"],
         [{ available: true, running: false, lastError: "spawn-failed" }, "restart"],
         [{ available: false, reason: "not-configured" }, "connect"],
+        [{ available: false, reason: "deferred-autostart" }, null],
         [{ available: true, running: false, restartPending: true, standby: "off" }, null],
         [{ available: true, running: true, cwd: "/home/u" }, null],
       ];

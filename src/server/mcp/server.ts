@@ -601,11 +601,11 @@ export function isClaudeSessionAttached(claudeSessionId: string, sinceMs: number
   return sessions ? hasLiveEntryFor(sessions.list(), claudeSessionId, sinceMs) : false;
 }
 
-/** Whether an MCP client other than the Claude session `ownClaudeSessionId`
+/** Whether an MCP client other than the Claude sessions `ownClaudeSessionIds`
  * is live — the launcher supervisor's `otherAiAttached` (#2196), wired in
  * `index.ts`. See `hasLiveEntryOtherThan`. */
-export function isOtherMcpClientLive(ownClaudeSessionId: string | undefined): boolean {
-  return sessions ? hasLiveEntryOtherThan(sessions.list(), ownClaudeSessionId, Date.now()) : false;
+export function isOtherMcpClientLive(ownClaudeSessionIds: ReadonlySet<string>): boolean {
+  return sessions ? hasLiveEntryOtherThan(sessions.list(), ownClaudeSessionIds, Date.now()) : false;
 }
 
 /**

@@ -131,7 +131,11 @@ and the read has no side effect for it to protect. For the same reason `GET /api
 also admits a request with no `Origin` when `Sec-Fetch-Site: same-origin` — a header a page cannot
 set; a cross-site `<img>` probe says `cross-site` and is still refused, so it cannot rotate the
 nonce. Before this, every launcher action in the npm build failed at the nonce. `startMode: "off"`
-is a preference, not a control: `TANDEM_DISABLE_LAUNCHER=1` is the kill switch. `attached` is computed server-side from the launched session's
+is a preference, not a control: `TANDEM_DISABLE_LAUNCHER=1` is the kill switch. Since #2196 a chat
+message, or a user's reply on a Claude-authored thread, starts Tandem's Claude from Off too (and saves the
+mode as `on-click`, as a Start does) unless another AI session is attached; anyone who can write those
+already holds the nonce that starts it, so this widens no reach, but it does mean Off is "not until I talk
+to it", not "never". `attached` is computed server-side from the launched session's
 UUID, which never crosses the wire.) That scrubbing is what the LAN Host accommodation (`createApiMiddleware`'s
 `extraHosts`, wired from `resolvedLanIP`) exists for, and it is now exactly scoped: LAN
 hosts may **read** `/api`; their writes are refused.

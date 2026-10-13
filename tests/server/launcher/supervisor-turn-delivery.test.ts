@@ -2269,7 +2269,7 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
 
   it("not while another AI is attached (Bryan: 'Not if another AI is on')", async () => {
     let other = true;
-    const seen: Array<string | undefined> = [];
+    const seen: Array<ReadonlySet<string>> = [];
     const { sup, emit } = await stoppedByChoice("off", {
       otherAiAttached: (own) => {
         seen.push(own);
@@ -2282,7 +2282,7 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
     expect(children).toHaveLength(1);
     // The check is told Tandem's own last session, so that child's leftover
     // entry is not mistaken for someone else's.
-    expect(seen.at(-1)).toMatch(/^[0-9a-f-]{36}$/);
+    expect([...(seen.at(-1) ?? [])]).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
     expect(sup.status()).toEqual({ running: false, standby: "off" });
     // The declined message is not owed either: a later Start writes no turn.
     other = false;
@@ -2417,6 +2417,94 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
     await sleep(30);
     await settle();
     expect(children).toHaveLength(1);
+  });
+
+  it("a Turn off that takes the lock between the message and its start still leaves the message owed", async () => {
+    const { sup, emit } = await stoppedByChoice("idle");
+    // Off queues first; the chat's start queues behind it.
+    const off = sup.updateSettings({ startMode: "off" });
+    emit(chatEvent());
+    await off;
+    // The message still starts Claude from off, and the start still answers it.
+    const child2 = await nthChild(2);
+    await waitFor(() => texts(child2).length > 0, "the wake turn");
+    expect(texts(child2)).toEqual([SUPERVISOR_WAKE_PROMPT]);
+  });
+
+  it("from off, a message that arrives before the user's own Start rides on that Start's spawn", async () => {
+    const { sup, emit } = await stoppedByChoice("off");
+    // Hold the lock with a plan read, so Start and the message's start both
+    // queue behind it — Start first, before it has armed anything.
+    const read = deferred<string>();
+    const reads = interceptIntegrationsReads((n, pass) => (n === 1 ? read.promise : pass()));
+    try {
+      const holding = sup.refreshConfigured();
+      await waitFor(() => reads.count() === 1, "the held plan read");
+      const started = sup.startByUser();
+      emit(chatEvent());
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+      await holding;
+      await started;
+    } finally {
+      reads.restore();
+    }
+    const child2 = await nthChild(2);
+    await waitFor(() => texts(child2).length > 0, "the wake turn");
+    expect(texts(child2)).toEqual([SUPERVISOR_WAKE_PROMPT]);
+    await sleep(30);
+    expect(children).toHaveLength(2);
+  });
+
+  it("a message start queued AHEAD of shutdown's stop() spawns nothing", async () => {
+    const { sup, emit } = await stoppedByChoice("idle");
+    const read = deferred<string>();
+    const reads = interceptIntegrationsReads((n, pass) => (n === 1 ? read.promise : pass()));
+    let stopping: Promise<void>;
+    try {
+      const holding = sup.refreshConfigured();
+      await waitFor(() => reads.count() === 1, "the held plan read");
+      emit(chatEvent()); // queued first
+      stopping = sup.stop(); // queued second
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+      await holding;
+      await stopping;
+    } finally {
+      reads.restore();
+    }
+    await sleep(30);
+    await settle();
+    expect(children).toHaveLength(1);
+    // And an Off after shutdown arms nothing either.
+    await sup.updateSettings({ startMode: "off" });
+    emit(chatEvent());
+    await sleep(30);
+    await settle();
+    expect(children).toHaveLength(1);
+  });
+
+  it("a message start does not reset a tripped crash breaker", async () => {
+    const { sup, emit } = makeSupervisor({ restartBackoffsMs: [0] });
+    await sup.startFresh(cwdDir);
+    for (let n = 1; ; n++) {
+      exitChild(children[n - 1], 1);
+      const st = sup.status();
+      if (!st.running && st.lastError !== undefined) break;
+      await nthChild(n + 1);
+      await waitFor(() => sup.status().running, `restart ${n}`);
+    }
+    expect(sup.status()).toMatchObject({ running: false, lastError: "circuit-open" });
+    // The user turns it off; a chat then starts it once.
+    await sup.updateSettings({ startMode: "off" });
+    emit(chatEvent());
+    const before = children.length;
+    const next = await nthChild(before + 1);
+    await waitFor(() => sup.status().running, "the message start");
+    // It crashes again. The breaker still counts, so it is not restarted.
+    exitChild(next, 1);
+    await sleep(50);
+    await settle();
+    expect(children).toHaveLength(before + 1);
+    expect(sup.status().running).toBe(false);
   });
 
   it("status says a message would start Claude only in standby with nothing in the way", async () => {

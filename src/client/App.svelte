@@ -636,7 +636,13 @@ function turnOffClaude(): void {
 
 /** The chat panel's resume row (#2196): a chat sent while Tandem's Claude was
  *  stopped by choice, which the server is starting it to answer. */
-const chatResumeState = createChatResume(aiReadiness, refreshAiReadinessAfterLauncherAction);
+const chatResumeState = createChatResume(aiReadiness, refreshAiReadinessAfterLauncherAction, () => {
+  let latest: number | null = null;
+  for (const m of chatState.messages) {
+    if (m.author === "claude" && (latest === null || m.timestamp > latest)) latest = m.timestamp;
+  }
+  return latest;
+});
 
 /** The chat panel's Start / Turn off control (#2195): Turn off while Tandem's
  *  Claude runs, Start while it is in standby, hidden otherwise (no launcher,

@@ -24,6 +24,8 @@ function fakeReadiness() {
     launcherStandby: "off" as LauncherStandby | null,
     launcherStartsOnMessage: true,
     launcherRemedy: "start" as Exclude<AiChip, null> | null,
+    serverUnreachable: false,
+    lastClaudeMessageAt: null as number | null,
   });
   const refreshLauncherStatus = vi.fn();
   const afterLauncherAction = vi.fn();
@@ -46,17 +48,22 @@ function fakeReadiness() {
     get launcherRemedy() {
       return r.launcherRemedy;
     },
+    get serverUnreachable() {
+      return r.serverUnreachable;
+    },
     refreshLauncherStatus,
   };
   return { r, readiness, refreshLauncherStatus, afterLauncherAction };
 }
 
 let dispose: (() => void) | null = null;
+/** Read by the hook's `lastClaudeMessageAt`; a test sets it through `reply()`. */
+const lastClaude = $state<{ at: number | null }>({ at: null });
 
 function mount(readiness: ChatResumeReadiness, afterLauncherAction: () => void = () => {}) {
   let made!: ReturnType<typeof createChatResume>;
   dispose = $effect.root(() => {
-    made = createChatResume(readiness, afterLauncherAction);
+    made = createChatResume(readiness, afterLauncherAction, () => lastClaude.at);
   });
   flushSync();
   return made;
@@ -64,6 +71,7 @@ function mount(readiness: ChatResumeReadiness, afterLauncherAction: () => void =
 
 beforeEach(() => {
   vi.useFakeTimers();
+  lastClaude.at = null;
 });
 
 afterEach(() => {
@@ -156,6 +164,32 @@ describe("createChatResume", () => {
     vi.advanceTimersByTime(RESUME_FIRST_READ_MS * 10);
     expect(afterLauncherAction).not.toHaveBeenCalled();
     expect(refreshLauncherStatus).not.toHaveBeenCalled();
+  });
+
+  it("a Claude reply after the send clears the row — some AI answered", () => {
+    const { r, readiness } = fakeReadiness();
+    const resume = mount(readiness);
+    lastClaude.at = Date.now() - 1_000; // an older reply does not count
+    resume.noteSent();
+    r.launcherStandby = null;
+    r.launcherRemedy = "restart";
+    flushSync();
+    expect(resume.view).toEqual({ kind: "failed", remedy: "restart" });
+    lastClaude.at = Date.now() + 5;
+    flushSync();
+    expect(resume.view).toBeNull();
+    expect(resume.pending).toBe(false);
+  });
+
+  it("the grace still ends when its timer fires against a clock stepped back", () => {
+    const { readiness } = fakeReadiness();
+    const resume = mount(readiness);
+    resume.noteSent();
+    flushSync();
+    vi.setSystemTime(Date.now() - 5_000);
+    vi.advanceTimersByTime(RESUME_GRACE_MS);
+    flushSync();
+    expect(resume.view).toEqual({ kind: "failed", remedy: "start" });
   });
 
   it("stops promising when the grace runs out with nothing begun — on a timer", () => {

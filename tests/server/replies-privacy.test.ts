@@ -104,6 +104,23 @@ describe("replies observer — ADR-027 privacy guard", () => {
     },
   );
 
+  // The reply that starts a stopped Tandem's Claude (#2196) is one on a
+  // Claude-authored parent, so the parents that must stay silent are pinned
+  // with author "claude" too: the author must never decide the outcome.
+  it.each([
+    ["a private Claude comment (legacy envelope / stale-tab merge)", "comment", "private"],
+    ["a Claude-authored note", "note", undefined],
+  ] as const)("does NOT fire for a user reply on %s", (_label, type, audience) => {
+    const { doc, events, dispose, parentId } = setup(type, "claude");
+    if (audience) {
+      const map = doc.getMap(Y_MAP_ANNOTATIONS);
+      map.set(parentId, { ...(map.get(parentId) as Annotation), audience });
+    }
+    addUserReply(doc, parentId, "should never reach Claude");
+    expect(events).toHaveLength(0);
+    dispose();
+  });
+
   it("does NOT fire for a reply on a note (user-private per ADR-027)", () => {
     const { doc, events, dispose, parentId } = setup("note");
     addUserReply(doc, parentId, "should never reach Claude");

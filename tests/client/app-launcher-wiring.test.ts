@@ -68,6 +68,11 @@ describe("App resume-row wiring (#2196)", () => {
     expect(APP).toMatch(/startingForMessage: viaKey === "chat" && chatResumeState\.pending,/);
   });
 
+  it("the chat panel's Start hides beside the resume row, which carries its own remedy", () => {
+    const ctl = APP.slice(APP.indexOf("const tandemClaudeControl = $derived"));
+    expect(ctl.slice(0, ctl.indexOf(");\n"))).toMatch(/chatResumeState\.view === null/);
+  });
+
   it("the remedy routes through ctaHandler", () => {
     expect(APP).toMatch(/aiCtaHandler\(AI_CTA\[remedy\]\.action\)\(\)/);
   });

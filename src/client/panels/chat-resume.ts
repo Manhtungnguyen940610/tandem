@@ -33,6 +33,9 @@ export const RESUME_GRACE_MS = 20_000;
 
 export interface ChatResumeInput {
   running: boolean;
+  /** `/health` has gone quiet for a strike run: the server is gone, and the
+   * offline notice speaks for the message. */
+  serverUnreachable: boolean;
   /** A start or restart is under way (`launcherRestarting`). */
   restarting: boolean;
   /** Still in standby with nothing under way. */
@@ -46,13 +49,16 @@ export function chatResume(
   request: ChatResumeRequest | null,
   input: ChatResumeInput,
 ): ChatResume | null {
-  if (request === null || input.running) return null;
+  if (request === null || input.running || input.serverUnreachable) return null;
   const resuming: ChatResume = {
     kind: "resuming",
     verb: request.from === "idle" ? "resuming" : "starting",
   };
   const inGrace = input.now - request.at < RESUME_GRACE_MS;
-  if (input.restarting) return resuming;
+  // A start under way. `restarting` is the fresh-gated reading; a standby with
+  // no remedy is the RAW `restartPending` — one failed status read during a
+  // long start must not turn "resuming" into "couldn't start".
+  if (input.restarting || (input.standby !== null && input.remedy === null)) return resuming;
   // Still in standby with nothing under way: the server has not begun, or has
   // not been re-read since the send. Inside the grace that is the normal gap;
   // past it the start is not coming (another AI attached meanwhile, say).

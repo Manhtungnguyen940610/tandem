@@ -16,6 +16,7 @@ export type ChatResumeReadiness = Pick<
   | "launcherStandby"
   | "launcherStartsOnMessage"
   | "launcherRemedy"
+  | "serverUnreachable"
   | "refreshLauncherStatus"
 >;
 
@@ -37,6 +38,10 @@ export function createChatResume(
   /** The re-reads every launcher action takes afterwards (App's
    *  `refreshAiReadinessAfterLauncherAction`): a message start is one. */
   afterLauncherAction: () => void,
+  /** When the newest Claude-authored chat message landed, or null. A reply
+   *  after the send means some AI answered (another one attached meanwhile,
+   *  say), so the row has nothing left to say. */
+  lastClaudeMessageAt: () => number | null,
 ): {
   readonly view: ChatResume | null;
   /** A send is being answered by a start — the toast must not contradict it. */
@@ -50,6 +55,7 @@ export function createChatResume(
   const view = $derived(
     chatResume(request, {
       running: r.launcherRunning,
+      serverUnreachable: r.serverUnreachable,
       restarting: r.launcherRestarting,
       standby: r.launcherStandby,
       remedy: r.launcherRemedy,
@@ -57,18 +63,24 @@ export function createChatResume(
     }),
   );
 
-  // Cleared once Claude runs, so a later idle stop does not resurrect it.
+  // Cleared once Claude runs, so a later idle stop does not resurrect it; and
+  // once any Claude reply lands after the send.
   $effect(() => {
-    if (r.launcherRunning) request = null;
+    if (request === null) return;
+    const replied = lastClaudeMessageAt();
+    if (r.launcherRunning || (replied !== null && replied >= request.at)) request = null;
   });
 
   // Per request: a second send restarts the schedule.
   $effect(() => {
     if (request === null) return;
+    const graceEnds = request.at + RESUME_GRACE_MS;
     const timers = [
       setTimeout(() => r.refreshLauncherStatus(), RESUME_FIRST_READ_MS),
+      // At least the grace's end: a timer that fires a hair early, or a clock
+      // stepped back, must not leave "resuming" up with nothing to bump it.
       setTimeout(() => {
-        now = Date.now();
+        now = Math.max(Date.now(), graceEnds);
       }, RESUME_GRACE_MS),
     ];
     return () => {

@@ -190,16 +190,19 @@ interface SupervisorOpts {
    * push, never again here.
    */
   subscribeDuringStandby?: (cb: (event: TandemEvent) => void) => () => void;
+  // Production must keep the default: `isStartWorthy` decides only "addressed
+  // to Claude", never "may Claude see it", and relies on this subscription for
+  // the Solo and licence half (the real-queue test pins the default).
   /**
    * Whether an AI session OTHER than Tandem's own Claude is live (#2196;
-   * Bryan: "Not if another AI is on"). Given the Claude session id of
-   * Tandem's last child, or undefined before the first spawn, so its leftover
-   * MCP entry — live for up to a minute after the stop — is not mistaken for
+   * Bryan: "Not if another AI is on"). Given the Claude session ids of every
+   * child this supervisor has spawned, so their leftover MCP entries — live
+   * for up to a minute after a stop or a start-fresh — are not mistaken for
    * someone else's. A seam because the registry lives in `mcp/server.ts`,
    * which this module must not import; `index.ts` wires it. The default is
    * `() => false`, which is today's single-AI behaviour.
    */
-  otherAiAttached?: (ownClaudeSessionId: string | undefined) => boolean;
+  otherAiAttached?: (ownClaudeSessionIds: ReadonlySet<string>) => boolean;
 }
 
 /**
@@ -1069,10 +1072,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     gapUnsubscribe = null;
   }
 
-  /** The Claude session id of the last child spawned, kept across its stop, so
-   * `otherAiAttached` can tell that child's leftover MCP entry from another
-   * AI's (#2196). Undefined until the first spawn. */
-  let lastChildSessionId: string | undefined;
+  /** The Claude session ids of every child this supervisor has spawned, kept
+   * across their stops, so `otherAiAttached` can tell their leftover MCP
+   * entries from another AI's (#2196). A start-fresh changes the id, and the
+   * replaced child's entry still looks live for a minute. */
+  const ownChildSessionIds = new Set<string>();
+  /** Raised synchronously by the public `stop()` — shutdown — and lowered by
+   * `start()`. While up, no message starts Claude, whatever lands on the lock
+   * after it — including an Off that re-arms the standby watch (#2196). */
+  let shuttingDown = false;
 
   /**
    * The standby watch (#2196): unsubscribe fn while armed, else null. Armed
@@ -1101,7 +1109,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
 
   /** Is an AI other than Tandem's own last child live? */
   function anotherAiOn(): boolean {
-    return otherAiAttached(lastChildSessionId);
+    return otherAiAttached(ownChildSessionIds);
   }
 
   function setStandby(next: LauncherStandby | undefined): void {
@@ -1120,7 +1128,11 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       wakeOwedAcrossSpawns = true;
       if (messageStartQueued) return;
       messageStartQueued = true;
-      void startForMessage();
+      // `startForMessage` catches what it can; this catches the rest, because
+      // an unhandled rejection exits the server (#2125).
+      startForMessage().catch((err: unknown) => {
+        console.error("[Launcher] Starting Claude for a message failed:", err);
+      });
     });
   }
 
@@ -1132,10 +1144,17 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     await withLock(async () => {
       // Re-checked under the lock: the user's own Start, a shutdown or another
       // AI attaching may all have landed while this waited.
-      if (standby === undefined || isAlive() || anotherAiOn()) return;
+      if (shuttingDown || standby === undefined || isAlive() || anotherAiOn()) return;
       console.error("[Launcher] A message arrived while Claude was stopped — starting it");
+      // Owed again here, not only in the watch: a Turn off that took the lock
+      // between the message and this start cleared it (#1866), and this start
+      // still exists only to answer that message.
+      wakeOwedAcrossSpawns = true;
       try {
-        const result = await respawn(undefined, undefined, { clearSession: false });
+        const result = await respawn(undefined, undefined, {
+          clearSession: false,
+          byMessage: true,
+        });
         if (!result.spawned) {
           console.error(`[Launcher] Could not start Claude for the message: ${result.why}`);
         }
@@ -1624,7 +1643,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     lastRefusal = null;
     deliveryKillAt = undefined;
     setStandby(undefined);
-    lastChildSessionId = plan.sessionId;
+    ownChildSessionIds.add(plan.sessionId);
 
     // One timestamp for the spawn: the exit handler's `ranFor` and the status
     // route's attachment match must agree on when this child started.
@@ -2526,6 +2545,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   }
 
   async function start(): Promise<void> {
+    shuttingDown = false;
     return withLock(async () => {
       if (child || breakerTripped) return;
       // The settings read counts as launching, so a status poll during it
@@ -2586,7 +2606,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   async function respawn(
     cwdOverride: string | undefined,
     opts: RelocateOpts | undefined,
-    { clearSession }: { clearSession: boolean },
+    { clearSession, byMessage = false }: { clearSession: boolean; byMessage?: boolean },
   ): Promise<RespawnResult> {
     // Licence admission (#1521), at the very top — BEFORE `stopInternal`,
     // `clearSavedSession` and `persistRequestedCwd`, so a refused relaunch
@@ -2605,7 +2625,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // that is exactly the window that used to offer a Restart button.
     launching++;
     try {
-      return await stopAndSpawn(cwdOverride, opts, clearSession);
+      return await stopAndSpawn(cwdOverride, opts, clearSession, byMessage);
     } finally {
       launching--;
     }
@@ -2615,13 +2635,19 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     cwdOverride: string | undefined,
     opts: RelocateOpts | undefined,
     clearSession: boolean,
+    byMessage: boolean,
   ): Promise<RespawnResult> {
     await stopInternal();
     if (clearSession) clearSavedSession();
     // relaunch/startFresh always mean "user is actively asking" → clear breaker.
-    breakerTripped = false;
-    recentAttempts = [];
-    deliveryKillStreak = 0;
+    // A start for a message does not (#2196): a chat is not a decision to try
+    // a Claude that kept crashing again, and nothing else bounds how often one
+    // can arrive.
+    if (!byMessage) {
+      breakerTripped = false;
+      recentAttempts = [];
+      deliveryKillStreak = 0;
+    }
     // stopInternal() raised the stop flag on the way in. Lower it before the
     // new spawn, or the exit handler treats the *next* crash as a deliberate
     // stop and silently declines to restart — the supervisor stays dead.
@@ -2835,15 +2861,17 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * runs `stopInternal` too, and a Restart after a crash must keep the wake the
    * crash owed. */
   async function stop(): Promise<void> {
+    // Synchronously, before the lock: a message start already queued AHEAD of
+    // this stop must not spawn a Claude that shutdown then SIGTERMs (#2196).
+    shuttingDown = true;
     return withLock(async () => {
       userStopped = true;
       userStopCount += 1;
       wakeOwedAcrossSpawns = false;
       // A crash may have armed the watch; a user stop carries nothing (#2181).
       disarmGapWatch();
-      // Shutdown: no message may start Claude after this (#2196). A start
-      // already queued on the lock behind this stop finds no standby and
-      // returns.
+      // Shutdown: no message may start Claude after this (#2196); see
+      // `shuttingDown`.
       setStandby(undefined);
       await stopInternal();
     });

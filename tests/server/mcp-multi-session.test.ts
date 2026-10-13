@@ -317,13 +317,13 @@ describe("an open standalone stream pins its session against the reaper", () => 
     const theirs = await openSession("their-claude", "users-own-claude");
     try {
       // Theirs has no stream yet, but its initialize just ran: live.
-      expect(isOtherMcpClientLive(own)).toBe(true);
-      expect(isOtherMcpClientLive("users-own-claude")).toBe(true);
+      expect(isOtherMcpClientLive(new Set([own]))).toBe(true);
+      expect(isOtherMcpClientLive(new Set(["users-own-claude"]))).toBe(true);
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(Date.now() + 2 * 60_000);
       // Two minutes on, only the streaming entry is live — and it is ours.
-      expect(isOtherMcpClientLive(own)).toBe(false);
-      expect(isOtherMcpClientLive("users-own-claude")).toBe(true);
+      expect(isOtherMcpClientLive(new Set([own]))).toBe(false);
+      expect(isOtherMcpClientLive(new Set(["users-own-claude"]))).toBe(true);
     } finally {
       vi.useRealTimers();
       await mineStream.close();

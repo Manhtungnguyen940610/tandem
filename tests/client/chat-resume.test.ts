@@ -15,6 +15,7 @@ import {
 const AT = 1_000_000;
 const base: ChatResumeInput = {
   running: false,
+  serverUnreachable: false,
   restarting: false,
   standby: "off",
   remedy: "start",
@@ -73,6 +74,26 @@ describe("chatResume", () => {
       });
     },
   );
+
+  it("a start whose status read failed (raw restartPending, fresh gate down) is still resuming", () => {
+    // standby kept, remedy null because the raw status still says restartPending.
+    expect(
+      chatResume(
+        { at: AT, from: "off" },
+        { ...base, restarting: false, remedy: null, now: AT + RESUME_GRACE_MS * 3 },
+      ),
+    ).toMatchObject({ kind: "resuming" });
+  });
+
+  it("says nothing while the server is unreachable — the offline notice speaks for it", () => {
+    expect(chatResume({ at: AT, from: "off" }, { ...base, serverUnreachable: true })).toBeNull();
+    expect(
+      chatResume(
+        { at: AT, from: "off" },
+        { ...base, serverUnreachable: true, now: AT + RESUME_GRACE_MS },
+      ),
+    ).toBeNull();
+  });
 
   it("an unknown status earns the grace and then silence, never a claim", () => {
     const unknown = { ...base, standby: null, remedy: null };
