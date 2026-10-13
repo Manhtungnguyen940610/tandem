@@ -170,21 +170,6 @@ test("the chat panel's Turn off sends startMode alone", async ({ page }) => {
     });
 });
 
-/** Close every open document. A page load with nothing open auto-opens a
- * Scratchpad (#842), which stays open on the shared backend for the next test
- * and would hide the empty state the Start test needs. */
-async function closeAllDocuments(): Promise<void> {
-  const mcp = new McpTestClient();
-  await mcp.connect();
-  try {
-    await cleanupAllOpenDocuments(mcp);
-  } finally {
-    await mcp.close();
-  }
-}
-
-test.afterEach(closeAllDocuments);
-
 async function sendChat(page: Page, text: string): Promise<void> {
   await openChat(page);
   const input = page.locator("[data-testid='chat-composer-input']");
