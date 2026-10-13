@@ -17,8 +17,10 @@ import {
   DEFAULT_BIND_HOST,
   DEFAULT_WS_PORT,
   LAN_BIND_ENABLED,
+  TANDEM_PURCHASE_URL,
   TAURI_HOSTNAME,
 } from "../../shared/constants.js";
+import { AI_REFUSAL_RECONNECT_HINT, LICENSE_REQUIRED_RPC_CODE } from "../../shared/license-copy.js";
 import { createAuthMiddleware } from "../auth/middleware.js";
 import { getTokenFilePath, tokenFileIsAuthoritative } from "../auth/token-store.js";
 import { isNonLoopback } from "../bind-check.js";
@@ -30,6 +32,7 @@ import { registerIntegrationsRoutes } from "../integrations/api-routes.js";
 import { readExistingTandemEntries } from "../integrations/existing-config.js";
 import { createKeychain, KEYCHAIN_SERVICE_MODELS } from "../integrations/keychain.js";
 import { createIntegrationsStore } from "../integrations/storage.js";
+import { type AiRefusal, aiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import { registerModelsRoutes } from "../models/api-routes.js";
 import { resolveAppDataDir, SESSION_DIR } from "../platform.js";
 import { runWithMcpContext } from "../sessions/context.js";
@@ -348,6 +351,62 @@ function sendJsonRpcError(
   res.status(status).json({ jsonrpc: "2.0", error: { code, message }, id });
 }
 
+/** The JSON-RPC `error` object for a licence refusal (#1521). */
+export function licenseRefusalRpcError(refusal: AiRefusal): {
+  code: number;
+  message: string;
+  data: { error: string; kind: AiRefusal["kind"]; purchaseUrl?: string };
+} {
+  return {
+    code: LICENSE_REQUIRED_RPC_CODE,
+    message: refusal.message,
+    data: {
+      error: refusal.error,
+      kind: refusal.kind,
+      // Never on `unverifiable`: that reader most likely already paid.
+      ...(refusal.kind === "unlicensed" ? { purchaseUrl: TANDEM_PURCHASE_URL } : {}),
+    },
+  };
+}
+
+/**
+ * The JSON-RPC body answering a refused `POST /mcp`, or `null` when the body
+ * holds no request at all (only notifications or client responses). The caller
+ * answers that case 202 and drops it: an error with `id: null` would surface in
+ * the host as a response to an unknown id.
+ *
+ * A batch answers with an array, one error per request element, each carrying
+ * that element's own id — `jsonrpcId` returns `null` for an array, which is why
+ * this does not use it.
+ */
+export function licenseRefusalRpcBody(body: unknown, refusal: AiRefusal): unknown {
+  const error = licenseRefusalRpcError(refusal);
+  // Hand-rolled, not the SDK's `isJSONRPCRequest`: that is a strict schema
+  // parse, so a request with malformed params would read as "not a request"
+  // and be dropped — and a malformed request must still hear the refusal.
+  const isRequest = (m: unknown): m is { id: unknown; method: unknown } =>
+    m !== null &&
+    typeof m === "object" &&
+    "method" in m &&
+    "id" in m &&
+    (m as { id: unknown }).id !== undefined;
+  // Only a refused `initialize` carries the reconnect hint: the host marks the
+  // server failed and will not handshake again by itself.
+  const answer = (m: { id: unknown; method: unknown }) => ({
+    jsonrpc: "2.0",
+    error:
+      m.method === "initialize"
+        ? { ...error, message: `${error.message} ${AI_REFUSAL_RECONNECT_HINT}` }
+        : error,
+    id: m.id,
+  });
+  if (Array.isArray(body)) {
+    const answers = body.filter(isRequest).map(answer);
+    return answers.length > 0 ? answers : null;
+  }
+  return isRequest(body) ? answer(body) : null;
+}
+
 /**
  * How a body-parse failure is reported, keyed by `err.type` from body-parser.
  * `default` also covers the rejected promises Express 5 forwards here from the
@@ -582,6 +641,23 @@ export async function startMcpServerStdio(
   ports: { wsPort: number; mcpPort: number },
   transport: Transport = new StdioServerTransport(),
 ): Promise<void> {
+  // Licence admission (#1521). Stdio server mode is reached only by
+  // hand-setting `TANDEM_TRANSPORT=stdio`; refused at start with a raw
+  // responder that answers every request with the same error `/mcp` sends.
+  // Not re-checked mid-session — an accepted residual for an env-only mode.
+  const refusal = aiRefusal();
+  if (refusal) {
+    console.error("[Tandem] Stdio MCP refused: AI features are unlicensed");
+    transport.onmessage = (msg) => {
+      const answer = licenseRefusalRpcBody(msg, refusal);
+      if (answer === null) return;
+      transport.send(answer as Parameters<Transport["send"]>[0]).catch((err: unknown) => {
+        console.error("[Tandem] Stdio licence refusal could not be sent:", err);
+      });
+    };
+    await transport.start();
+    return;
+  }
   const server = createMcpServer({
     version: APP_VERSION,
     transport: "stdio",
@@ -774,8 +850,41 @@ export async function startMcpServerHttp(
     return entry;
   }
 
+  /**
+   * Close the session a refused request named, if it names a live one (#1521).
+   * `registry.close` does not route through `onsessionclosed` (that fires on
+   * DELETE), so the last-session presence clear it would have done is repeated
+   * here.
+   */
+  async function closeRefusedSession(req: import("express").Request): Promise<void> {
+    const entry = registry.get(readMcpSessionHeader(req));
+    if (!entry) return;
+    await registry.close(entry.sessionId);
+    console.error(`[Tandem] MCP session ${entry.sessionId} closed: AI features are unlicensed`);
+    if (registry.size === 0) clearAllClaudePresence();
+  }
+
   mcpApp.post("/mcp", async (req: import("express").Request, res: import("express").Response) => {
     const body = req.body as unknown;
+
+    // Licence admission (#1521). FIRST, above the `isInit` branch and above
+    // session lookup, so a future sessionless (2026-07-28) branch cannot sit
+    // outside it — and so a client re-POSTing a stale session id hears the
+    // licence reason every time, never a 404 that reads as "re-initialize".
+    //
+    // Answered as HTTP 200 + `application/json`: the only shape the SDK client
+    // hands to `onmessage` unmodified, which makes `Client.connect` reject with
+    // an `McpError` carrying `data`. No session is created for a refused
+    // `initialize`.
+    const refusal = aiRefusal();
+    if (refusal) {
+      const answer = licenseRefusalRpcBody(body, refusal);
+      if (answer === null) res.status(202).end();
+      else res.status(200).json(answer);
+      await closeRefusedSession(req);
+      return;
+    }
+
     const isInit =
       isInitializeRequest(body) || (Array.isArray(body) && body.some(isInitializeRequest));
 
@@ -810,6 +919,17 @@ export async function startMcpServerHttp(
   // rejection paths (409 "one stream per session", 405, 400) — `res` is still
   // open at that point, so `close` is guaranteed to fire and undo the pin.
   mcpApp.get("/mcp", async (req: import("express").Request, res: import("express").Response) => {
+    // Licence pre-lookup (#1521), deliberately HERE and not in
+    // `dispatchToSession`: that helper is shared with POST and DELETE and
+    // touches the session. 403, never 200 — a 200 would be fed to the SDK's SSE
+    // parser and silently reconnect. SDK clients never read this body; it helps
+    // non-SDK consumers. The stream pin is never taken.
+    const refusal = aiRefusal();
+    if (refusal) {
+      sendAiRefusal(res, refusal);
+      await closeRefusedSession(req);
+      return;
+    }
     await dispatchToSession(req, res, req.body, null, (entry) => {
       registry.noteStreamOpened(entry.sessionId);
       // `once`, not `on`. A duplicate `close` would decrement a count that can
@@ -965,6 +1085,9 @@ export async function startMcpServerHttp(
     },
     diagnosticsDeps,
     shutdownWiring,
+    // #1521: activation resumes a launcher the licence refused. Late-bound,
+    // like the launcher routes' own getter; absent when no launcher is wired.
+    launcher ? { getSupervisor: launcher.getSupervisor } : undefined,
   );
 
   // --- Channel support endpoints ---

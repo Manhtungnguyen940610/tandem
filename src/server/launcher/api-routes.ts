@@ -61,6 +61,7 @@ import {
   LAUNCHER_ERROR_NOT_AVAILABLE,
   LAUNCHER_ERROR_PATH_REJECTED,
   LAUNCHER_ERROR_REAPER_NOT_FOUND,
+  LAUNCHER_ERROR_UNLICENSED,
   type LauncherCwdPreview,
   type LauncherStatus,
   type LauncherUnavailableReason,
@@ -71,9 +72,10 @@ import { isLoopback } from "../auth/middleware.js";
 import { assertLoopbackForMutation, assertOriginAllowlisted } from "../integrations/api-routes.js";
 import type { IntegrationConfig } from "../integrations/schema.js";
 import type { IntegrationsStore } from "../integrations/storage.js";
+import { type AiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import type { Handler } from "../mcp/routes/_shared.js";
 import { previewCwdDrift } from "./cwd-preview.js";
-import { resolveRouteCwd, type Supervisor } from "./supervisor.js";
+import { LicenseRefusedError, resolveRouteCwd, type Supervisor } from "./supervisor.js";
 
 /**
  * Single-use nonce gate for mutating launcher routes.
@@ -633,7 +635,19 @@ function makeStartHandler(deps: LauncherRoutesDeps): Handler {
     inflight.start = true;
     try {
       await deps.startSupervisor();
-      res.json({ ok: true, started: deps.getSupervisor() !== null });
+      // Licence (#1521): NOT refused at the top. Refusing there would leave the
+      // supervisor null and the reason `deferred-autostart` forever, which the
+      // client reads as "booting" — and Rust posts this route exactly once,
+      // dropping a non-2xx. Instead the supervisor is created, `startInternal`
+      // refuses by returning, and `resumeAfterLicence` can bring it back after
+      // activation. What this route must not do is claim `started: true`.
+      const sup = deps.getSupervisor();
+      const refusal = sup?.licenceRefusal();
+      if (refusal) {
+        sendUnlicensed(res, refusal);
+        return;
+      }
+      res.json({ ok: true, started: sup !== null });
     } catch (err) {
       sendUnexpected(res, err, "launcher start failed");
     } finally {
@@ -834,7 +848,23 @@ function runningCwd(sup: Supervisor | null): string | null {
  * (including a checked filesystem path) is safe to return, but bound it anyway. */
 const MAX_ERROR_DETAIL = 300;
 
+/**
+ * 403 for a launcher action the licence refused (#1521): the refusal envelope
+ * the supervisor recorded, plus the route's own `code`. The supervisor holds
+ * the refusal, so this module never makes the licence decision itself.
+ */
+function sendUnlicensed(res: Response, refusal: AiRefusal): void {
+  sendAiRefusal(res, refusal, { code: LAUNCHER_ERROR_UNLICENSED });
+}
+
 function sendUnexpected(res: Response, err: unknown, label: string): void {
+  if (err instanceof LicenseRefusedError) {
+    // Not unexpected, and not a 500: the relaunch was refused before anything
+    // was stopped. One line, no stack.
+    console.error(`[Launcher routes] ${label}: AI features are unlicensed`);
+    if (!res.headersSent) sendUnlicensed(res, err.refusal);
+    return;
+  }
   // Full error (stack, etc.) stays server-side; the wire gets a bounded message.
   console.error(`[Launcher routes] ${label}:`, err);
   if (res.headersSent) return;
