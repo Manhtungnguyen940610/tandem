@@ -41,7 +41,12 @@ import { spawn } from "node:child_process";
 import type { TandemEvent } from "../../../src/server/events/types.js";
 import type { IntegrationsFile } from "../../../src/server/integrations/schema.js";
 import { createIntegrationsStore } from "../../../src/server/integrations/storage.js";
-import { createSupervisor, type Supervisor } from "../../../src/server/launcher/supervisor.js";
+import {
+  createSupervisor,
+  LicenseRefusedError,
+  type Supervisor,
+} from "../../../src/server/launcher/supervisor.js";
+import type { AiRefusal } from "../../../src/server/license/ai-refusal.js";
 import {
   SUPERVISOR_INITIAL_PROMPT,
   SUPERVISOR_WAKE_PROMPT,
@@ -1583,5 +1588,414 @@ describe("status().busy — the launched child's turn-in-flight flag", () => {
     failCallbacksOnly(held(child1));
     expect(sup.status().running).toBe(true);
     expect(busy(sup)).toBe(false);
+  });
+});
+
+// --- #2195 --------------------------------------------------------------------
+
+function chatEvent(): TandemEvent {
+  eventSeq++;
+  return {
+    id: `evt_${eventSeq}`,
+    type: "chat:message",
+    timestamp: Date.now(),
+    documentId: "d1",
+    payload: { messageId: `msg_${eventSeq}`, text: "are you there?", replyTo: null, anchor: null },
+  } as TandemEvent;
+}
+
+function writeLauncherSettingsFile(settings: Record<string, unknown>): void {
+  fs.writeFileSync(
+    path.join(baseDir, "launcher-settings.json"),
+    JSON.stringify({ version: 1, ...settings }),
+  );
+}
+
+function readLauncherSettingsFile(): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(path.join(baseDir, "launcher-settings.json"), "utf8"));
+}
+
+const LICENCE_REFUSAL: AiRefusal = {
+  error: "LICENSE_REQUIRED",
+  kind: "unlicensed",
+  message: "Tandem is unlicensed, so its AI features are turned off.",
+};
+
+describe("#2195 — the start mode holds boot back", () => {
+  it("with no settings file, boot starts Claude exactly as before", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await nthChild(1);
+    expect(sup.status().running).toBe(true);
+  });
+
+  it("on-click: boot spawns nothing and reads as awaiting-start, not restarting or failed", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await settle();
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toEqual({ running: false, standby: "awaiting-start" });
+  });
+
+  it("off: boot spawns nothing and reads as off", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await settle();
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+  });
+
+  it("an unreadable settings file holds boot back rather than defaulting to auto", async () => {
+    fs.writeFileSync(path.join(baseDir, "launcher-settings.json"), "{ truncated");
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await settle();
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toEqual({ running: false, standby: "awaiting-start" });
+  });
+
+  it("decides the standby even with no integration yet, so the chip is Start once setup writes one", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    fs.writeFileSync(
+      path.join(baseDir, "integrations.json"),
+      JSON.stringify({ schemaVersion: 3, integrations: [] }),
+    );
+    const { sup } = makeSupervisor();
+    await sup.start();
+    expect(sup.status()).toMatchObject({ running: false, configured: false });
+    const file: IntegrationsFile = {
+      schemaVersion: 3,
+      integrations: [
+        {
+          kind: "claude-code",
+          id: "active",
+          label: "Active Claude",
+          configPath:
+            process.platform === "win32"
+              ? "C:\\Users\\test\\.claude.json"
+              : "/home/test/.claude.json",
+          transport: "http",
+          url: "http://127.0.0.1:3479/mcp",
+          apply: "create",
+          workingDirectory: cwdDir,
+        },
+      ],
+    };
+    await createIntegrationsStore(baseDir).write(file);
+    await sup.refreshConfigured();
+    expect(sup.status()).toEqual({ running: false, standby: "awaiting-start" });
+  });
+
+  it("a crash restart whose settings read fails keeps the last good settings, not the fallback", async () => {
+    // A held or half-written file for a moment says nothing about what the user
+    // chose: the restarted Claude keeps its idle lifetime rather than the
+    // fallback's "always".
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "idle", idleMinutes: 1 });
+    const { sup } = makeSupervisor({ idleMinuteMs: 40 });
+    await sup.start();
+    const child1 = await nthChild(1);
+    fs.writeFileSync(path.join(baseDir, "launcher-settings.json"), "{ truncated");
+    exitChild(child1, 1);
+    const child2 = await nthChild(2);
+    // Resumed with nothing owed, so it writes no turn and its idle clock starts
+    // at spawn — and only an idle lifetime ends it.
+    await waitFor(() => child2.killed, "the restarted child's idle stop");
+    expect(sup.status()).toEqual({ running: false, standby: "idle" });
+  });
+
+  it("on-click holds only boot: a crash restart of a Claude the user started brings it back", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await sup.startByUser();
+    exitChild(await nthChild(1), 1);
+    await nthChild(2);
+    expect(sup.status().running).toBe(true);
+  });
+});
+
+describe("#2195 — Start (startByUser)", () => {
+  it("starts from awaiting-start", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    expect(await sup.startByUser()).toEqual({ spawned: true });
+    await nthChild(1);
+    expect(sup.status().running).toBe(true);
+    // The mode was not off, so Start leaves it alone.
+    expect(readLauncherSettingsFile().startMode).toBe("on-click");
+  });
+
+  it("from off, starts Claude and saves the mode as on-click (Bryan, 2026-10-13)", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await sup.startByUser();
+    await nthChild(1);
+    expect(readLauncherSettingsFile().startMode).toBe("on-click");
+  });
+
+  it("a relaunch from off saves on-click too, so Settings never says Off beside a running Claude", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await sup.relaunch();
+    await nthChild(1);
+    expect(readLauncherSettingsFile().startMode).toBe("on-click");
+  });
+
+  it("is a no-op beside a live child — it never relaunches a running Claude", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const child1 = await nthChild(1);
+    expect(await sup.startByUser()).toEqual({ spawned: true });
+    await settle();
+    expect(children).toHaveLength(1);
+    expect(child1.killed).toBe(false);
+  });
+
+  it("a licence refusal changes nothing, the saved mode included", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor({ aiRefusal: () => LICENCE_REFUSAL });
+    await sup.start();
+    await expect(sup.startByUser()).rejects.toBeInstanceOf(LicenseRefusedError);
+    expect(children).toHaveLength(0);
+    expect(readLauncherSettingsFile().startMode).toBe("off");
+  });
+});
+
+describe("#2195 — turning Claude off (updateSettings startMode off)", () => {
+  it("stops a running Claude, schedules no restart, and reads as off with no error", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const child1 = await nthChild(1);
+    await sup.updateSettings({ startMode: "off" });
+    expect(child1.killed).toBe(true);
+    await sleep(50);
+    await settle();
+    expect(children).toHaveLength(1);
+    expect(occurrences("Restarting Claude in")).toBe(0);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+    expect(readLauncherSettingsFile()).toMatchObject({ startMode: "off", lifetime: "always" });
+  });
+
+  it("cancels a crash restart that is only scheduled", async () => {
+    const { sup } = makeSupervisor({ restartBackoffsMs: [150] });
+    await sup.start();
+    exitChild(await nthChild(1), 1);
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, restartPending: true });
+    await sup.updateSettings({ startMode: "off" });
+    await sleep(300);
+    await settle();
+    expect(children).toHaveLength(1);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+  });
+
+  it("cancels a crash restart suspended in its plan read", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const read = deferred<string>();
+    const reads = interceptIntegrationsReads((n, pass) => (n === 1 ? read.promise : pass()));
+    try {
+      exitChild(await nthChild(1), 1);
+      await waitFor(() => reads.count() === 1, "the restart's integrations read");
+      await sup.updateSettings({ startMode: "off" });
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+      await sleep(50);
+      await settle();
+    } finally {
+      reads.restore();
+    }
+    expect(children).toHaveLength(1);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+  });
+
+  it("a crash restart while off never starts Claude, even if the off came first in the file only", async () => {
+    // Off written by another path (a second window, a hand edit) between
+    // spawns: the restart's own plan read is what holds it back.
+    const { sup } = makeSupervisor();
+    await sup.start();
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    exitChild(await nthChild(1), 1);
+    await sleep(50);
+    await settle();
+    expect(children).toHaveLength(1);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+  });
+
+  it("licence activation does not bring back a Claude the user turned off", async () => {
+    let refused = true;
+    const { sup } = makeSupervisor({ aiRefusal: () => (refused ? LICENCE_REFUSAL : null) });
+    await sup.start();
+    expect(sup.licenceRefusal()).not.toBeNull();
+    await sup.updateSettings({ startMode: "off" });
+    refused = false;
+    await sup.resumeAfterLicence();
+    await settle();
+    expect(children).toHaveLength(0);
+  });
+
+  it("owes nothing for what arrives while off (#1866): Start resumes with no turn", async () => {
+    const { sup, emit } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    await sup.updateSettings({ startMode: "off" });
+    emit(chatEvent());
+    await sup.startByUser();
+    const child2 = await nthChild(2);
+    await settle();
+    expect(texts(child2)).toEqual([]);
+  });
+
+  it("switching the mode back on does not start Claude by itself", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await sup.updateSettings({ startMode: "auto" });
+    await settle();
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toEqual({ running: false, standby: "awaiting-start" });
+  });
+
+  it("merges a partial patch: a lifetime change keeps the saved start mode", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await sup.updateSettings({ lifetime: "idle" });
+    expect(readLauncherSettingsFile()).toMatchObject({
+      startMode: "off",
+      lifetime: "idle",
+      idleMinutes: 30,
+    });
+  });
+});
+
+describe("#2195 — stopping while idle", () => {
+  const IDLE = { startMode: "auto", lifetime: "idle", idleMinutes: 1 } as const;
+  /** One configured "minute" lasts this many ms in these tests. */
+  const MINUTE = 40;
+
+  it("never stops mid-turn; stops one idle period after the turn's result", async () => {
+    writeLauncherSettingsFile(IDLE);
+    const { sup } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    // The bootstrap turn is in flight: well past the limit, still running.
+    await sleep(MINUTE * 3);
+    expect(child1.killed).toBe(false);
+    pushJson(child1, RESULT_OK);
+    await waitFor(() => child1.killed, "the idle stop");
+    await sleep(50);
+    await settle();
+    expect(children).toHaveLength(1);
+    expect(occurrences("Restarting Claude in")).toBe(0);
+    expect(sup.status()).toEqual({ running: false, standby: "idle" });
+  });
+
+  it("starts the clock at spawn when a resumed spawn writes no turn", async () => {
+    writeLauncherSettingsFile(IDLE);
+    const { sup } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await waitFor(() => children[0].killed, "the first idle stop");
+    await settle();
+    await sup.startByUser();
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([]);
+    await waitFor(() => child2.killed, "the resumed spawn's idle stop");
+  });
+
+  it("an event resets the clock: the wake turn runs, and the clock restarts at its result", async () => {
+    writeLauncherSettingsFile({ ...IDLE, idleMinutes: 3 });
+    const { sup, emit } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    pushJson(child1, RESULT_OK);
+    await settle();
+    await sleep(MINUTE * 2);
+    emit(chatEvent());
+    await sleep(MINUTE * 2);
+    // 4 "minutes" since the bootstrap result, but a turn is in flight.
+    expect(child1.killed).toBe(false);
+    pushJson(child1, RESULT_OK);
+    await waitFor(() => child1.killed, "the idle stop after the wake");
+  });
+
+  it("what the user sends while idle-stopped is owed: Start resumes with a wake turn", async () => {
+    writeLauncherSettingsFile(IDLE);
+    const { sup, emit } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await waitFor(() => children[0].killed, "the idle stop");
+    await settle();
+    emit(chatEvent());
+    await sup.startByUser();
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_WAKE_PROMPT]);
+  });
+
+  it("an event during the stop's SIGTERM grace is never written into the dying child", async () => {
+    writeLauncherSettingsFile(IDLE);
+    let releaseExit: (() => void) | null = null;
+    onSpawn = (child, index) => {
+      if (index !== 0) return;
+      // Hold child 1's exit until the test lets it go.
+      child.kill = (sig: NodeJS.Signals = "SIGTERM") => {
+        child.kills.push(sig);
+        child.killed = true;
+        releaseExit = () => {
+          child.signalCode = sig;
+          child.emit("exit", null, sig);
+        };
+        return true;
+      };
+    };
+    const { sup, emit } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    pushJson(child1, RESULT_OK);
+    await waitFor(() => child1.killed, "the idle stop's kill");
+    const writesBefore = child1.stdin.writes.length;
+    emit(chatEvent());
+    expect(child1.stdin.writes).toHaveLength(writesBefore);
+    (releaseExit as (() => void) | null)?.();
+    await settle();
+    await sup.startByUser();
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_WAKE_PROMPT]);
+  });
+
+  it("does not count toward the crash breaker", async () => {
+    writeLauncherSettingsFile(IDLE);
+    const { sup } = makeSupervisor({ idleMinuteMs: 5 });
+    for (let i = 0; i < 12; i++) {
+      if (i === 0) await sup.startFresh(cwdDir);
+      else await sup.startByUser();
+      const child = await nthChild(i + 1);
+      pushJson(child, RESULT_OK);
+      await waitFor(() => child.killed, `idle stop ${i + 1}`);
+      await settle();
+    }
+    expect(occurrences("Restarting Claude in")).toBe(0);
+    expect(occurrences("Circuit breaker tripped")).toBe(0);
+    expect(sup.status()).toEqual({ running: false, standby: "idle" });
+  });
+
+  it("a Settings change to idle arms the clock on the running child; back to always cancels it", async () => {
+    const { sup } = makeSupervisor({ idleMinuteMs: MINUTE });
+    await sup.startFresh(cwdDir);
+    const child1 = children[0];
+    pushJson(child1, RESULT_OK);
+    await settle();
+    await sup.updateSettings({ lifetime: "idle", idleMinutes: 2 });
+    await sup.updateSettings({ lifetime: "always" });
+    await sleep(MINUTE * 4);
+    expect(child1.killed).toBe(false);
+    await sup.updateSettings({ lifetime: "idle", idleMinutes: 1 });
+    await waitFor(() => child1.killed, "the idle stop after switching to idle");
   });
 });

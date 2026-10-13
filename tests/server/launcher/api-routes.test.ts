@@ -23,7 +23,11 @@ import {
 import type { RespawnResult, Supervisor } from "../../../src/server/launcher/supervisor.js";
 import { TAURI_HOSTNAME } from "../../../src/shared/constants.js";
 import {
+  DEFAULT_LAUNCHER_SETTINGS,
   LAUNCHER_ERROR_REAPER_NOT_FOUND,
+  type LauncherSettings,
+  type LauncherSettingsPatch,
+  type LauncherStandby,
   type LauncherStatus,
   type LauncherUnavailableReason,
 } from "../../../src/shared/launcher/contract.js";
@@ -41,6 +45,10 @@ interface FakeSupervisorOpts {
   startFreshHook?: (cwd?: string) => Promise<void>;
   /** What relaunch / start-fresh report; defaults to a spawn (#2180). */
   respawnResult?: RespawnResult;
+  /** A stopped supervisor's standby (#2195). */
+  standby?: LauncherStandby;
+  startByUser?: () => Promise<RespawnResult>;
+  updateSettings?: (patch: LauncherSettingsPatch) => Promise<LauncherSettings>;
 }
 
 const FAKE_SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -61,6 +69,9 @@ function makeFakeSupervisor(opts: FakeSupervisorOpts = {}): Supervisor {
     refreshConfigured: async () => {},
     resumeAfterLicence: async () => {},
     licenceRefusal: () => null,
+    startByUser: opts.startByUser ?? (async () => ({ spawned: true })),
+    updateSettings:
+      opts.updateSettings ?? (async (patch) => ({ ...DEFAULT_LAUNCHER_SETTINGS, ...patch })),
     status: () =>
       opts.running
         ? {
@@ -72,7 +83,9 @@ function makeFakeSupervisor(opts: FakeSupervisorOpts = {}): Supervisor {
             busy: opts.busy ?? false,
             spawnedAt: FAKE_SPAWNED_AT,
           }
-        : { running: false },
+        : opts.standby
+          ? { running: false, standby: opts.standby }
+          : { running: false },
   };
 }
 
@@ -151,6 +164,7 @@ const baseDeps = (
   unavailableReason: () => reason,
   startSupervisor: async () => {},
   store: store ?? makeStubStore(),
+  settingsBase: fs.mkdtempSync(path.join(os.tmpdir(), "launcher-settings-base-")),
   isClaudeSessionAttached: () => false,
 });
 
@@ -847,6 +861,8 @@ describe("loopback vs LAN redaction for running:false (T6)", () => {
       refreshConfigured: async () => {},
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
+      startByUser: async () => ({ spawned: true }),
+      updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
       status: () => ({ running: false, lastError: "spawn-failed" as const }),
     };
     const { app: appLoop } = makeApp(baseDeps(sup));
@@ -889,6 +905,8 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       refreshConfigured: async () => {},
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
+      startByUser: async () => ({ spawned: true }),
+      updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
       status: () => {
         throw new Error("simulated supervisor crash");
       },
@@ -912,6 +930,8 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       refreshConfigured: async () => {},
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
+      startByUser: async () => ({ spawned: true }),
+      updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
       status: () => {
         throw new Error("simulated");
       },
@@ -939,6 +959,7 @@ describe("POST /api/launcher/start — autostart deferral (#1236)", () => {
         sup = makeFakeSupervisor();
       },
       store: makeStubStore(),
+      settingsBase: fs.mkdtempSync(path.join(os.tmpdir(), "launcher-settings-base-")),
       isClaudeSessionAttached: () => false,
       calls: () => calls,
       ...overrides,
@@ -1378,5 +1399,333 @@ describe("POST /api/launcher/cwd-preview (#1282)", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// --- #2195 --------------------------------------------------------------------
+
+async function freshNonce(app: Express): Promise<string> {
+  return ((await request(app, "GET", "/api/launcher/nonce")).body as { nonce: string }).nonce;
+}
+
+/** A raw request with an arbitrary content type — `request` always sends JSON. */
+async function rawPost(
+  app: Express,
+  url: string,
+  body: string,
+  contentType: string,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, "127.0.0.1", async () => {
+      const address = server.address();
+      if (typeof address !== "object" || address === null) {
+        server.close();
+        reject(new Error("no address"));
+        return;
+      }
+      try {
+        const res = await fetch(`http://127.0.0.1:${address.port}${url}`, {
+          method: "POST",
+          headers: { Origin: `http://${TAURI_HOSTNAME}`, "content-type": contentType },
+          body,
+        });
+        resolve({ status: res.status, body: await res.json().catch(() => null) });
+      } catch (err) {
+        reject(err);
+      } finally {
+        server.close();
+      }
+    });
+  });
+}
+
+describe("GET /api/launcher/status — standby (#2195)", () => {
+  it("reports standby to loopback callers", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor({ standby: "off" })));
+    const res = await request(app, "GET", "/api/launcher/status");
+    expect(res.body).toMatchObject({ available: true, running: false, standby: "off" });
+    expect((res.body as Record<string, unknown>).restartPending).toBeUndefined();
+  });
+
+  it("withholds standby from non-loopback callers", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor({ standby: "idle" })), {
+      remoteAddress: "192.168.1.50",
+    });
+    const res = await request(app, "GET", "/api/launcher/status");
+    expect(res.body).toEqual({ available: true, running: false });
+  });
+
+  it("not-configured outranks standby", async () => {
+    const sup: Supervisor = {
+      ...makeFakeSupervisor(),
+      status: () => ({ running: false, configured: false, standby: "awaiting-start" }),
+    };
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "GET", "/api/launcher/status");
+    expect(res.body).toEqual({ available: false, reason: "not-configured" });
+  });
+});
+
+describe("GET /api/launcher/settings (#2195)", () => {
+  it("answers the defaults with no file, even with no supervisor", async () => {
+    const { app } = makeApp(baseDeps(null, "deferred-autostart"));
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ settings: DEFAULT_LAUNCHER_SETTINGS });
+  });
+
+  it("marks a newer file read-only", async () => {
+    const deps = baseDeps(null);
+    fs.writeFileSync(
+      path.join(deps.settingsBase, "launcher-settings.json"),
+      JSON.stringify({ version: 2, startMode: "off" }),
+    );
+    const { app } = makeApp(deps);
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.body).toEqual({
+      settings: { ...DEFAULT_LAUNCHER_SETTINGS, startMode: "off" },
+      readOnly: true,
+    });
+  });
+
+  it("is loopback-only", async () => {
+    const { app } = makeApp(baseDeps(null), { remoteAddress: "192.168.1.50" });
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a foreign origin", async () => {
+    const { app } = makeApp(baseDeps(null));
+    const res = await request(app, "GET", "/api/launcher/settings", undefined, {
+      Origin: "https://evil.example",
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /api/launcher/settings (#2195)", () => {
+  it("routes the patch through the supervisor when there is one", async () => {
+    const patches: LauncherSettingsPatch[] = [];
+    const sup = makeFakeSupervisor({
+      updateSettings: async (patch) => {
+        patches.push(patch);
+        return { ...DEFAULT_LAUNCHER_SETTINGS, ...patch };
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { startMode: "off" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      settings: { ...DEFAULT_LAUNCHER_SETTINGS, startMode: "off" },
+    });
+    expect(patches).toEqual([{ startMode: "off" }]);
+  });
+
+  it("writes the file directly with no supervisor, and never starts one", async () => {
+    let started = 0;
+    const deps: LauncherRoutesDeps = {
+      ...baseDeps(null, "disabled-by-env"),
+      startSupervisor: async () => {
+        started += 1;
+      },
+    };
+    const { app } = makeApp(deps);
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { lifetime: "idle", idleMinutes: 5 },
+    });
+    expect(res.status).toBe(200);
+    expect(
+      JSON.parse(fs.readFileSync(path.join(deps.settingsBase, "launcher-settings.json"), "utf8")),
+    ).toEqual({ version: 1, startMode: "auto", lifetime: "idle", idleMinutes: 5 });
+    expect(started).toBe(0);
+  });
+
+  it("requires the single-use nonce", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    const missing = await request(app, "POST", "/api/launcher/settings", {
+      patch: { startMode: "off" },
+    });
+    expect(missing.status).toBe(403);
+    const nonce = await freshNonce(app);
+    await request(app, "POST", "/api/launcher/settings", { nonce, patch: { startMode: "off" } });
+    const replay = await request(app, "POST", "/api/launcher/settings", {
+      nonce,
+      patch: { startMode: "off" },
+    });
+    expect(replay.status).toBe(403);
+  });
+
+  it.each([
+    [{ startMode: "sometimes" }],
+    [{}],
+    [{ idleMinutes: 0 }],
+    [{ startMode: "auto", lifetime: "always", idleMinutes: 30, version: 9 }],
+  ])("rejects the patch %j with 400", async (patch) => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch,
+    });
+    expect(res.status).toBe(400);
+    expect((res.body as { code: string }).code).toBe("INVALID_BODY");
+  });
+
+  it("a text/plain simple request changes nothing", async () => {
+    let calls = 0;
+    const sup = makeFakeSupervisor({
+      updateSettings: async () => {
+        calls += 1;
+        return DEFAULT_LAUNCHER_SETTINGS;
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await rawPost(
+      app,
+      "/api/launcher/settings",
+      JSON.stringify({ patch: { startMode: "off" } }),
+      "text/plain",
+    );
+    expect(res.status).toBe(400);
+    expect(calls).toBe(0);
+  });
+
+  it("answers 409 rather than overwriting a file a newer Tandem wrote", async () => {
+    const deps = baseDeps(null);
+    const file = path.join(deps.settingsBase, "launcher-settings.json");
+    const raw = JSON.stringify({ version: 2, startMode: "off" });
+    fs.writeFileSync(file, raw);
+    const { app } = makeApp(deps);
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { startMode: "auto" },
+    });
+    expect(res.status).toBe(409);
+    expect((res.body as { code: string }).code).toBe("LAUNCHER_SETTINGS_NEWER");
+    expect(fs.readFileSync(file, "utf8")).toBe(raw);
+  });
+
+  it("is refused off-loopback", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()), { remoteAddress: "192.168.1.50" });
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: "x",
+      patch: { startMode: "off" },
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("POST /api/launcher/start — the Start control (userInitiated, #2195)", () => {
+  it("starts an existing supervisor's Claude through startByUser", async () => {
+    let calls = 0;
+    const sup = makeFakeSupervisor({
+      standby: "awaiting-start",
+      startByUser: async () => {
+        calls += 1;
+        return { spawned: true };
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/start", {
+      nonce: await freshNonce(app),
+      userInitiated: true,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, started: true });
+    expect(calls).toBe(1);
+  });
+
+  it("without userInitiated the answer is unchanged and nothing starts", async () => {
+    let calls = 0;
+    const sup = makeFakeSupervisor({
+      startByUser: async () => {
+        calls += 1;
+        return { spawned: true };
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/start", {});
+    expect(res.body).toEqual({ ok: true, started: false });
+    const plain = await rawPost(
+      app,
+      "/api/launcher/start",
+      JSON.stringify({ userInitiated: true }),
+      "text/plain",
+    );
+    expect(plain.body).toEqual({ ok: true, started: false });
+    expect(calls).toBe(0);
+  });
+
+  it("requires a fresh nonce, and a replay is refused", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    const missing = await request(app, "POST", "/api/launcher/start", { userInitiated: true });
+    expect(missing.status).toBe(403);
+    const nonce = await freshNonce(app);
+    await request(app, "POST", "/api/launcher/start", { nonce, userInitiated: true });
+    const replay = await request(app, "POST", "/api/launcher/start", {
+      nonce,
+      userInitiated: true,
+    });
+    expect(replay.status).toBe(403);
+  });
+
+  it("answers 404 when there is no integration to start", async () => {
+    const sup = makeFakeSupervisor({
+      startByUser: async () => ({ spawned: false, why: "no-integration" }),
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/start", {
+      nonce: await freshNonce(app),
+      userInitiated: true,
+    });
+    expect(res.status).toBe(404);
+    expect((res.body as { code: string }).code).toBe("NO_CLAUDE_INTEGRATION");
+  });
+
+  it("is still no bypass of TANDEM_DISABLE_LAUNCHER=1", async () => {
+    let started = 0;
+    const deps: LauncherRoutesDeps = {
+      ...baseDeps(null, "disabled-by-env"),
+      startSupervisor: async () => {
+        started += 1;
+      },
+    };
+    const { app } = makeApp(deps);
+    const res = await request(app, "POST", "/api/launcher/start", {
+      nonce: await freshNonce(app),
+      userInitiated: true,
+    });
+    expect(res.status).toBe(503);
+    expect(started).toBe(0);
+  });
+
+  it("joins the relaunch exclusion group: a concurrent relaunch gets 429", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sup = makeFakeSupervisor({
+      startByUser: async () => {
+        await held;
+        return { spawned: true };
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const startNonce = await freshNonce(app);
+    const pending = request(app, "POST", "/api/launcher/start", {
+      nonce: startNonce,
+      userInitiated: true,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const relaunch = await request(app, "POST", "/api/launcher/relaunch", {
+      nonce: await freshNonce(app),
+    });
+    expect(relaunch.status).toBe(429);
+    release();
+    expect((await pending).status).toBe(200);
   });
 });

@@ -406,6 +406,17 @@ Measured 2026-08-04 against a real `claude` binary (`docs/spikes/channel-push-st
 
 The bootstrap turn is likewise written **on spawn**, not on the CLI's `init` line: under these flags the CLI emits nothing until it has received a turn, so waiting for `init` deadlocks both sides.
 
+### Start mode and lifetime (#2195)
+
+Whether Tandem runs its Claude is a setting of its own, separate from the claude-code connection record: `<app-data>/launcher-settings.json`, `{version, startMode: "auto" | "on-click" | "off", lifetime: "always" | "idle", idleMinutes}` (`src/server/launcher/settings.ts`). It is read per spawn plan, like `integrations.json`, never per status poll. No file means the defaults (auto, always, 30), which is the behaviour before the setting existed; any other unreadable file reads as `on-click`, never `auto`, so a held or corrupt file cannot start an agent against an explicit Off. A file from a newer Tandem is read field by field and never written over.
+
+- **`off` holds every non-user start** — boot, a crash restart, a licence resume — and `on-click` holds boot only. User starts (Start, relaunch, start-fresh) all go through `respawn`; from `off` they save the mode as `on-click`.
+- **Switching to `off` stops Claude whatever state the supervisor is in.** `stopByChoice` runs `stopInternal` even with no child, which bumps the stop epoch and clears the restart timer, so a scheduled or in-flight crash restart is cancelled rather than bringing Claude back.
+- **Idle stop** runs from the end of the last turn (its `result`), or from the spawn when no turn was written; never while a turn is in flight. It is re-checked under the op lock with a generation counter, and it is a stop by choice, so it never counts toward the crash breaker.
+- **Standby** (`off`, `awaiting-start`, `idle`) is reported on `GET /api/launcher/status` (loopback-only) only with no `lastError` and no restart pending, so a failed stop still shows as a failure. The client renders it as a Start control at tier 2 of the pill, beside "Restarting Claude…".
+- **What is owed across a standby:** `off` owes nothing, like a user stop (#1866). `idle` and `awaiting-start` keep the gap watch armed, so a chat sent while Claude is stopped is delivered by a wake turn on the spawn that brings it back.
+- **Writes are partial patches** (`POST /api/launcher/settings`), serialized in one queue, so a stale view cannot put back a field another window changed.
+
 ### Activation
 
 The channel shim is registered **only on explicit request** — `tandem setup --apply --with-channel-shim`. There is deliberately **no wizard checkbox** — the CLI flag is the only opt-in, and three places claimed otherwise until 2026-08-09; the wizard's apply route calls `shouldRegisterChannelShim` with no override and so can only ever write the HTTP entry. It does not *remove* an existing shim either, because its `remove` list comes from the user's confirmed diff. It was default-on for the Claude Code target from #985 until Track E (see [Why `tandem-channel` Is Opt-In](#why-tandem-channel-is-opt-in) for why that default was doing harm). On the desktop bundle the wizard's apply path uses the channel-shim path injected into the sidecar via `TANDEM_CHANNEL_DIST` on spawn (resolved from the resource dir by `src-tauri/src/sidecar.rs`), since the server's own package-root derivation resolves outside the bundle.

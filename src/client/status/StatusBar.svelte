@@ -1,9 +1,11 @@
 <script lang="ts">
 import type { Editor as TiptapEditor } from "@tiptap/core";
 import { onDestroy, untrack } from "svelte";
+import type { LauncherStandby } from "../../shared/launcher/contract";
 import { createAgentLabel } from "../hooks/useAgentLabel.svelte";
 import type {
   AiChip,
+  AiCtaAction,
   AiLiveIndicator,
   AiReadinessState,
   LauncherFailure,
@@ -53,6 +55,12 @@ interface Props {
   /** Tandem is restarting its own Claude → "Restarting Claude…" (#2180).
    *  Required for the same reason as `aiLauncherAttached`. */
   aiLauncherRestarting: boolean;
+  /** That restart is a Start from standby → "Starting Claude…" (#2195). */
+  aiLauncherStarting: boolean;
+  /** Tandem's Claude is not running by choice (#2195) → the standby pill.
+   *  Required for the same reason as `aiLauncherAttached`: forgotten wiring
+   *  would land on "AI not connected", whose hover text says to run /mcp. */
+  aiLauncherStandby: LauncherStandby | null;
   /** `/health`'s session count, or null when unknown. */
   aiSessionCount: number | null;
   /** It tripped while another live session is attached → the sibling button.
@@ -72,6 +80,9 @@ interface Props {
   aiChip?: AiChip;
   onConnectAi?: () => void;
   onRestartClaude?: () => void;
+  /** The Start control (#2195). Required: an optional one would make a
+   *  forgotten mount a dead Start button rather than a type error. */
+  onStartClaude: () => void;
   /** Solo mode — suppresses the "AI not connected" nag when no AI is connected. */
   soloMode: boolean;
   /** Whether anything is delivering real-time events. Only `"none"` changes the
@@ -137,6 +148,8 @@ let {
   aiLauncherBusy = false,
   aiLauncherAttached,
   aiLauncherRestarting,
+  aiLauncherStarting,
+  aiLauncherStandby,
   aiSessionCount,
   aiLauncherFailure = null,
   aiLauncherFailureDismissed = false,
@@ -144,6 +157,7 @@ let {
   aiChip = null,
   onConnectAi,
   onRestartClaude,
+  onStartClaude,
   soloMode,
   pushDelivery = "unknown",
   claudeWorkingTool = null,
@@ -284,6 +298,8 @@ const aiView = $derived(
     launcherBusy: aiLauncherBusy,
     launcherAttached: aiLauncherAttached,
     launcherRestarting: aiLauncherRestarting,
+    launcherStarting: aiLauncherStarting,
+    launcherStandby: aiLauncherStandby,
     docSyncConnected: connected,
     sessionCount: aiSessionCount,
   }),
@@ -292,11 +308,21 @@ const aiView = $derived(
 // The "Tandem's Claude isn't running" sibling: copy from `TANDEM_CLAUDE_DOWN`,
 // handler choice from `AI_CTA[failure].action` — one lookup each, never a
 // parallel ternary (#1268).
+//
+// `ctaHandlers` is the one action → handler lookup for both buttons. Built in
+// a `$derived` so it reads the props when they change rather than freezing the
+// closures they had at mount, and keyed on `AiCtaAction` so a new action is a
+// type error here instead of falling down a binary ternary (#1268, #2195).
+const ctaHandlers = $derived<Record<AiCtaAction, (() => void) | undefined>>({
+  connect: onConnectAi,
+  restart: onRestartClaude,
+  start: onStartClaude,
+});
 const launcherDown = $derived(
   aiLauncherFailure && !aiLauncherFailureDismissed
     ? {
         ...TANDEM_CLAUDE_DOWN[aiLauncherFailure],
-        onclick: AI_CTA[aiLauncherFailure].action === "restart" ? onRestartClaude : onConnectAi,
+        onclick: ctaHandlers[AI_CTA[aiLauncherFailure].action],
       }
     : null,
 );
@@ -320,15 +346,20 @@ const launcherDown = $derived(
  * props, so they're bound inside `aiCta` here: a plain top-level object would
  * freeze stale closures over the props' initial values.
  */
-const aiCta = $derived(
-  aiChip
-    ? {
-        title: AI_CTA[aiChip].title,
-        ariaLabel: AI_CTA[aiChip].ariaLabel,
-        onclick: AI_CTA[aiChip].action === "restart" ? onRestartClaude : onConnectAi,
-      }
-    : null,
-);
+//
+// The standby pill (#2195) shows its own label ("Tandem's Claude is off"), so
+// its accessible name leads with that label and then names the action: WCAG
+// 2.5.3 wants the visible text inside the name, and without it the three
+// standbys would collapse to one screen-reader string.
+const aiCta = $derived.by(() => {
+  if (!aiChip) return null;
+  const lead = aiChip === "start" && aiView ? `${aiView.label}. ` : "";
+  return {
+    title: lead + AI_CTA[aiChip].title,
+    ariaLabel: lead + AI_CTA[aiChip].ariaLabel,
+    onclick: ctaHandlers[AI_CTA[aiChip].action],
+  };
+});
 
 // Activity latch (D3): `claudeActive` flaps to false every few seconds while
 // Claude idles between tool calls. Animating the now-full-opacity dot straight

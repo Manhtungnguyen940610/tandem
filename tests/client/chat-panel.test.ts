@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { render } from "@testing-library/svelte";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
 import type { ChatMessage } from "../../src/shared/types";
 
@@ -18,6 +18,9 @@ function renderChat(messages: ChatMessage[]) {
       onClear: async () => {},
       onExport: async () => {},
       onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
     },
   });
 }
@@ -126,5 +129,55 @@ describe("ChatPanel — the {@html} sink is routed through renderMarkdown", () =
 
     expect(view.container.querySelector("strong")).toBeNull();
     expect(view.container.textContent).toContain("**not bold**");
+  });
+});
+
+describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () => {
+  function renderWithControl(control: "start" | "turn-off" | null, messages: ChatMessage[] = []) {
+    const onStartClaude = vi.fn();
+    const onTurnOffClaude = vi.fn();
+    const result = render(ChatPanel, {
+      props: {
+        messages,
+        editor: null,
+        activeDocId: null,
+        openDocs: [],
+        capturedAnchor: null,
+        onCapturedAnchorChange: () => {},
+        onSend: () => true,
+        onClear: async () => {},
+        onExport: async () => {},
+        onInsert: () => false,
+        tandemClaudeControl: control,
+        onStartClaude,
+        onTurnOffClaude,
+      },
+    });
+    const btn = result.container.querySelector<HTMLButtonElement>(
+      "[data-testid='chat-tandem-claude-toggle']",
+    );
+    return { ...result, btn, onStartClaude, onTurnOffClaude };
+  }
+
+  it("shows Start on an EMPTY chat — where it is most needed — and calls onStartClaude", () => {
+    const { btn, onStartClaude, onTurnOffClaude, container } = renderWithControl("start");
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent?.trim()).toBe("Start Tandem's Claude");
+    btn?.click();
+    expect(onStartClaude).toHaveBeenCalledOnce();
+    expect(onTurnOffClaude).not.toHaveBeenCalled();
+    // Export/Clear stay tied to there being messages.
+    expect(container.querySelector("[data-testid='clear-chat-btn']")).toBeNull();
+  });
+
+  it("shows Turn off while it runs, naming Tandem's Claude", () => {
+    const { btn, onTurnOffClaude } = renderWithControl("turn-off", [claudeMsg()]);
+    expect(btn?.textContent?.trim()).toBe("Turn off Tandem's Claude");
+    btn?.click();
+    expect(onTurnOffClaude).toHaveBeenCalledOnce();
+  });
+
+  it("is absent when there is nothing to start or stop", () => {
+    expect(renderWithControl(null).btn).toBeNull();
   });
 });

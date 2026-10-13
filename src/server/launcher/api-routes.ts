@@ -1,11 +1,12 @@
 /**
  * HTTP routes for the Claude Code auto-launcher (#477 PR 4b).
  *
- * Seven endpoints, all under `/api/launcher/*`:
+ * Nine handlers on eight paths, all under `/api/launcher/*`:
  *   - `GET /status` — read-only; loopback returns full struct (with
  *     `sessionId` redacted to "<set>"), non-loopback returns the minimal
  *     `{ available, running }` shape (mirrors `/health`'s redaction pattern).
- *     `cwd`, `resuming`, `reaperPid`, `busy` and `attached` are loopback-only
+ *     `cwd`, `resuming`, `reaperPid`, `busy`, `attached` and `standby` are
+ *     loopback-only
  *     for the same reason as `/health`'s session-presence fields: `busy` in
  *     particular is an activity trace of the person at this machine, and the
  *     CORS allowlist admits any 127.0.0.1 port, so any local page can read
@@ -21,7 +22,15 @@
  *     Narrow write to the first claude-code integration's
  *     `workingDirectory` field. Bypasses the integrations apply-nonce
  *     rotation that a full-array POST would trigger.
- *   - `POST /start` — promote a `deferred-autostart` launcher (#1236).
+ *   - `POST /start` — promote a `deferred-autostart` launcher (#1236), or,
+ *     with `userInitiated: true` and a supervisor present, start Tandem's
+ *     Claude from standby (#2195). `userInitiated` is a caller-asserted
+ *     discriminator that keeps the Rust shell's presence POST from ever
+ *     starting an on-click Claude; like the nonce, it is NOT proof that a
+ *     human clicked anything.
+ *   - `GET /settings` / `POST /settings` — the start mode and lifetime of
+ *     Tandem's Claude (#2195). POST merges a partial patch; see
+ *     `makeSettingsPostHandler`.
  *   - `POST /cwd-preview` — body `{ cwd }`. Read-only drift verdict (#1282);
  *     loopback-only, no nonce. See `makeCwdPreviewHandler`.
  *
@@ -45,6 +54,7 @@ import {
   API_LAUNCHER_CWD_PREVIEW,
   API_LAUNCHER_NONCE,
   API_LAUNCHER_RELAUNCH,
+  API_LAUNCHER_SETTINGS,
   API_LAUNCHER_START,
   API_LAUNCHER_START_FRESH,
   API_LAUNCHER_STATUS,
@@ -61,10 +71,13 @@ import {
   LAUNCHER_ERROR_NOT_AVAILABLE,
   LAUNCHER_ERROR_PATH_REJECTED,
   LAUNCHER_ERROR_REAPER_NOT_FOUND,
+  LAUNCHER_ERROR_SETTINGS_NEWER,
   LAUNCHER_ERROR_UNLICENSED,
   type LauncherCwdPreview,
+  type LauncherSettingsResponse,
   type LauncherStatus,
   type LauncherUnavailableReason,
+  parseLauncherSettingsPatch,
   REAPER_NOT_FOUND_MARKER,
   type SkillRefreshError,
 } from "../../shared/launcher/contract.js";
@@ -75,6 +88,7 @@ import type { IntegrationsStore } from "../integrations/storage.js";
 import { type AiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import type { Handler } from "../mcp/routes/_shared.js";
 import { previewCwdDrift } from "./cwd-preview.js";
+import { readLauncherSettings, SettingsNewerError, updateLauncherSettings } from "./settings.js";
 import { LicenseRefusedError, resolveRouteCwd, type Supervisor } from "./supervisor.js";
 
 /**
@@ -179,6 +193,11 @@ export interface LauncherRoutesDeps {
   startSupervisor: () => Promise<void>;
   /** Reads/writes the integrations file. Same store passed to integrations routes. */
   store: IntegrationsStore;
+  /** Directory holding `launcher-settings.json` (the app-data dir). Used
+   * directly only while there is no supervisor (deferred, disabled, stdio):
+   * otherwise writes go through `Supervisor.updateSettings`, so they are
+   * serialized with the supervisor's own. */
+  settingsBase: string;
   /** Directories holding Tandem's own auto-opened documents, excluded from the
    * drift preview. Injected rather than imported: the paths are resolved in
    * `mcp/server.ts` (which registers these routes), and passing them keeps the
@@ -220,6 +239,10 @@ export function registerLauncherRoutes(app: Express, mw: Handler, deps: Launcher
 
   app.options(API_LAUNCHER_CWD_PREVIEW, mw);
   app.post(API_LAUNCHER_CWD_PREVIEW, mw, makeCwdPreviewHandler(deps));
+
+  app.options(API_LAUNCHER_SETTINGS, mw);
+  app.get(API_LAUNCHER_SETTINGS, mw, makeSettingsGetHandler(deps));
+  app.post(API_LAUNCHER_SETTINGS, mw, makeSettingsPostHandler(deps));
 }
 
 // --- Handlers -------------------------------------------------------------
@@ -297,6 +320,8 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
             running: false,
             lastError: raw.lastError,
             restartPending: true,
+            // A Start from standby in progress (#2195): "Starting", not "Restarting".
+            ...(raw.standby ? { standby: raw.standby } : {}),
             skillRefresh,
           }
         : { available: true, running: false };
@@ -317,8 +342,16 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
       res.json(body);
       return;
     }
+    // `standby` (#2195) rides on the plain stopped shape, loopback-only. The
+    // supervisor never emits it beside a `lastError`.
     const body: LauncherStatus = loopback
-      ? { available: true, running: false, lastError: raw.lastError, skillRefresh }
+      ? {
+          available: true,
+          running: false,
+          lastError: raw.lastError,
+          ...(raw.standby ? { standby: raw.standby } : {}),
+          skillRefresh,
+        }
       : { available: true, running: false };
     res.json(body);
   };
@@ -384,6 +417,15 @@ function sendNotAvailable(res: Response, reason: LauncherUnavailableReason, mess
     reason,
     message,
   });
+}
+
+/** The bare loopback check the read-shaped routes use (`cwd-preview`,
+ * `GET /settings`): `enforceLoopbackMutation` does not cover them. Returns true
+ * when it answered 403. */
+function refuseNonLoopbackRead(req: Request, res: Response): boolean {
+  if (isLoopback(req.socket.remoteAddress)) return false;
+  res.status(403).json({ error: "FORBIDDEN", message: "Loopback only." });
+  return true;
 }
 
 function sendInProgress(res: Response, message: string): void {
@@ -610,10 +652,20 @@ function makeStartHandler(deps: LauncherRoutesDeps): Handler {
     if (assertOriginAllowlisted(req, res, API_LAUNCHER_START)) return;
     if (assertLoopbackForMutation(req, res)) return;
 
-    // Idempotent: an already-started launcher is a success, not an error. The
-    // client fires this on every visibility change, so a second call after the
-    // first one won must not surface as a failure toast.
-    if (deps.getSupervisor() !== null) {
+    const existing = deps.getSupervisor();
+    if (existing !== null) {
+      // The Start control (#2195). Read through a guarded access, not
+      // `parseJsonObjectBody`: a body-less or `text/plain` POST (no preflight,
+      // `req.body` undefined) must keep getting the answer below, byte for
+      // byte, and must consume no nonce.
+      const raw = req.body as { userInitiated?: unknown; nonce?: unknown } | undefined;
+      if (raw !== null && typeof raw === "object" && raw.userInitiated === true) {
+        await startExistingByUser(existing, raw.nonce, res);
+        return;
+      }
+      // Idempotent: an already-started launcher is a success, not an error.
+      // The Rust shell posts this once per presence release, so a call that
+      // finds the supervisor already created must not surface as a failure.
       res.json({ ok: true, started: false });
       return;
     }
@@ -647,6 +699,10 @@ function makeStartHandler(deps: LauncherRoutesDeps): Handler {
         sendUnlicensed(res, refusal);
         return;
       }
+      // `started` reports that the launcher was PROMOTED (a supervisor now
+      // exists), not that Claude is running: a boot the start-mode setting
+      // holds back (#2195) creates the supervisor and spawns nothing, and the
+      // Rust caller only needs to know the deferral is over.
       res.json({ ok: true, started: sup !== null });
     } catch (err) {
       sendUnexpected(res, err, "launcher start failed");
@@ -654,6 +710,30 @@ function makeStartHandler(deps: LauncherRoutesDeps): Handler {
       inflight.start = false;
     }
   };
+}
+
+/** The `userInitiated` half of `POST /start` (#2195): a supervisor exists and
+ * the client's Start control asks for its Claude. Same nonce and exclusion
+ * group as relaunch, because it is the same stop+spawn underneath. */
+async function startExistingByUser(sup: Supervisor, nonce: unknown, res: Response): Promise<void> {
+  if (!consumeNonce(nonce, res)) return;
+  if (spawnOpInFlight()) {
+    sendInProgress(res, "another launcher start/relaunch is in progress");
+    return;
+  }
+  inflight.start = true;
+  try {
+    const result = await sup.startByUser();
+    if (!result.spawned) {
+      sendNoIntegration(res);
+      return;
+    }
+    res.json({ ok: true, started: true });
+  } catch (err) {
+    sendUnexpected(res, err, "start failed");
+  } finally {
+    inflight.start = false;
+  }
 }
 
 function makeWorkingDirHandler(deps: LauncherRoutesDeps): Handler {
@@ -722,6 +802,86 @@ function makeWorkingDirHandler(deps: LauncherRoutesDeps): Handler {
 }
 
 /**
+ * `GET /api/launcher/settings` (#2195) — the start mode and lifetime of
+ * Tandem's Claude.
+ *
+ * Bare loopback check, like `cwd-preview`: `enforceLoopbackMutation` does not
+ * cover GET, and the answer — two enums and an integer, no paths — is still a
+ * fact about the person at this machine. Origin allowlist like every launcher
+ * route. Answers with no supervisor (deferred, disabled, stdio) so Settings can
+ * show the choice in every runtime. Reads the file each call; nothing polls it.
+ */
+function makeSettingsGetHandler(deps: LauncherRoutesDeps): Handler {
+  return async (req: Request, res: Response) => {
+    if (assertOriginAllowlisted(req, res, API_LAUNCHER_SETTINGS)) return;
+    if (refuseNonLoopbackRead(req, res)) return;
+    const read = await readLauncherSettings(deps.settingsBase);
+    const body: LauncherSettingsResponse = { settings: read.settings };
+    if (read.source === "file" && read.newer) body.readOnly = true;
+    res.json(body);
+  };
+}
+
+/**
+ * `POST /api/launcher/settings` (#2195) — body `{ nonce, patch }`, where
+ * `patch` holds any non-empty subset of `startMode`, `lifetime`, `idleMinutes`.
+ *
+ * **A partial patch, never a whole object.** Every writer used to have to send
+ * all three fields, so a stale snapshot — a second window, a Settings tab
+ * opened before the chat panel's Turn off — put back a start mode the user had
+ * just changed. Merged server-side under one queue (`updateLauncherSettings`).
+ *
+ * With a supervisor the patch goes through `Supervisor.updateSettings`, under
+ * its op lock, which also applies it — switching to `off` stops Claude
+ * whatever state it is in. Without one it only writes the file. Neither path
+ * ever starts Claude: this route is `open` in the licence table because
+ * nothing here is an AI start, and turning Claude off must never be refused.
+ *
+ * Gates as `relaunch`: origin, `assertLoopbackForMutation`, a JSON object body
+ * (a `text/plain` simple request arrives as `undefined` and is a 400), and the
+ * single-use nonce, because the off switch stops a process.
+ */
+function makeSettingsPostHandler(deps: LauncherRoutesDeps): Handler {
+  return async (req: Request, res: Response) => {
+    if (assertOriginAllowlisted(req, res, API_LAUNCHER_SETTINGS)) return;
+    if (assertLoopbackForMutation(req, res)) return;
+    const body = parseJsonObjectBody(req, res);
+    if (body === null) return;
+    if (!consumeNonce(body.nonce, res)) return;
+    const parsed = parseLauncherSettingsPatch(body.patch);
+    if (!parsed.ok) {
+      sendBadRequest(
+        res,
+        LAUNCHER_ERROR_INVALID_BODY,
+        `patch.${parsed.field} is missing or invalid`,
+      );
+      return;
+    }
+    // No in-flight 429: writes queue behind the supervisor's lock and the
+    // settings module's queue, which is safe, so a second save waits rather
+    // than failing.
+    try {
+      const sup = deps.getSupervisor();
+      const settings = sup
+        ? await sup.updateSettings(parsed.patch)
+        : await updateLauncherSettings(deps.settingsBase, parsed.patch);
+      res.json({ ok: true, settings });
+    } catch (err) {
+      if (err instanceof SettingsNewerError) {
+        res.status(409).json({
+          error: "CONFLICT",
+          code: LAUNCHER_ERROR_SETTINGS_NEWER,
+          message:
+            "These settings were saved by a newer version of Tandem. Update Tandem to change them.",
+        });
+        return;
+      }
+      sendUnexpected(res, err, "failed to save launcher settings");
+    }
+  };
+}
+
+/**
  * `POST /api/launcher/cwd-preview` (#1282) — read-only drift verdict.
  *
  * Gates, and why they are these gates:
@@ -750,10 +910,7 @@ function makeWorkingDirHandler(deps: LauncherRoutesDeps): Handler {
 function makeCwdPreviewHandler(deps: LauncherRoutesDeps): Handler {
   return async (req: Request, res: Response) => {
     if (assertOriginAllowlisted(req, res, API_LAUNCHER_CWD_PREVIEW)) return;
-    if (!isLoopback(req.socket.remoteAddress)) {
-      res.status(403).json({ error: "FORBIDDEN", message: "Loopback only." });
-      return;
-    }
+    if (refuseNonLoopbackRead(req, res)) return;
     const body = parseJsonObjectBody(req, res);
     if (body === null) return;
     // A non-string `cwd` is a caller bug and gets a 400. Every other rejection —

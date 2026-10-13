@@ -46,7 +46,10 @@ import {
 } from "../../../src/server/launcher/supervisor.js";
 import type { AiRefusal } from "../../../src/server/license/ai-refusal.js";
 import { TAURI_HOSTNAME } from "../../../src/shared/constants.js";
-import { LAUNCHER_ERROR_UNLICENSED } from "../../../src/shared/launcher/contract.js";
+import {
+  DEFAULT_LAUNCHER_SETTINGS,
+  LAUNCHER_ERROR_UNLICENSED,
+} from "../../../src/shared/launcher/contract.js";
 import { LICENSE_REQUIRED } from "../../../src/shared/license-copy.js";
 
 class FakeChild extends EventEmitter {
@@ -375,6 +378,8 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
       refreshConfigured: async () => {},
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
+      startByUser: async () => ({ spawned: true }),
+      updateSettings: async (patch) => ({ ...DEFAULT_LAUNCHER_SETTINGS, ...patch }),
       status: () => ({ running: false }),
       ...overrides,
     };
@@ -443,6 +448,7 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
         unavailableReason: () => "stdio-mode",
         startSupervisor: async () => {},
         store,
+        settingsBase: baseDir,
         isClaudeSessionAttached: () => false,
       });
       const res = await withNonce(app, url);
@@ -468,6 +474,7 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
         });
       },
       store,
+      settingsBase: baseDir,
       isClaudeSessionAttached: () => false,
     });
     const res = await withNonce(app, "/api/launcher/start");
@@ -475,6 +482,30 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
     expect(res.body).toMatchObject({ error: LICENSE_REQUIRED, code: LAUNCHER_ERROR_UNLICENSED });
     // The supervisor EXISTS — that is what lets activation resume it.
     expect(sup).not.toBeNull();
+  });
+
+  it("a refused Start (userInitiated, #2195) answers 403 and changes nothing — not even the saved Off", async () => {
+    fs.writeFileSync(
+      path.join(baseDir, "launcher-settings.json"),
+      JSON.stringify({ version: 1, startMode: "off", lifetime: "always", idleMinutes: 30 }),
+    );
+    const sup = makeSupervisor();
+    await sup.start();
+    refused = true;
+    const app = makeApp({
+      getSupervisor: () => sup,
+      unavailableReason: () => "stdio-mode",
+      startSupervisor: async () => {},
+      store,
+      settingsBase: baseDir,
+      isClaudeSessionAttached: () => false,
+    });
+    const res = await withNonce(app, "/api/launcher/start", { userInitiated: true });
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ error: LICENSE_REQUIRED, code: LAUNCHER_ERROR_UNLICENSED });
+    expect(children).toHaveLength(0);
+    const saved = JSON.parse(fs.readFileSync(path.join(baseDir, "launcher-settings.json"), "utf8"));
+    expect(saved.startMode).toBe("off");
   });
 
   it("the deferred start still answers started: true when admitted (positive twin)", async () => {
@@ -486,6 +517,7 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
         sup = fakeSupervisor({});
       },
       store,
+      settingsBase: baseDir,
       isClaudeSessionAttached: () => false,
     });
     const res = await withNonce(app, "/api/launcher/start");

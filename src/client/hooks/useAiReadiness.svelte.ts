@@ -88,6 +88,7 @@ import { API_HEALTH, API_LAUNCHER_STATUS } from "../../shared/api-paths.js";
 import {
   isTransientlyUnavailable,
   type LauncherErrorCode,
+  type LauncherStandby,
   type LauncherStatus,
 } from "../../shared/launcher/contract.js";
 import { deliveryStall } from "../status/delivery-stall.js";
@@ -218,8 +219,21 @@ export type AiReadinessState = "booting" | "unconfigured" | "stopped" | "ready";
  *   - `restart` — configured but stopped for any other reason, including
  *     `circuit-open` with a healthy CLI, `wake-delivery-failed`, and the rare
  *     `binary-not-found`. Plain restart.
+ *   - `start`   — configured and stopped BY CHOICE (`standby`, #2195): the
+ *     start mode is off, it is waiting for Start, or it stopped while idle.
+ *     Nothing failed, so it is never a restart nag; its action is the Start
+ *     control (`POST /api/launcher/start` with `userInitiated`).
  */
-export type AiChip = "connect" | "setup" | "sign-in" | "restart" | null;
+export type AiChip = "connect" | "setup" | "sign-in" | "restart" | "start" | null;
+
+/**
+ * Which handler an `AiChip`'s CTA invokes. Named so every surface that turns a
+ * chip into a click can key a `Record<AiCtaAction, handler>` on it: a binary
+ * `action === "restart" ? a : b` keeps compiling when this union widens and
+ * routes the new member down the wrong branch — the #1268 bug, which a third
+ * member (`start`) would otherwise have reintroduced at three call sites.
+ */
+export type AiCtaAction = "connect" | "restart" | "start";
 
 /**
  * Everything a surface needs to render an `AiChip`'s call to action: its copy
@@ -247,7 +261,7 @@ export const AI_CTA: Record<
     ariaLabel: string;
     /** Which handler this CTA must invoke. `setup` resolves to `connect`: the
      * install flow IS the integration wizard, only with different copy. */
-    action: "connect" | "restart";
+    action: AiCtaAction;
   }
 > = {
   connect: {
@@ -280,11 +294,18 @@ export const AI_CTA: Record<
     ariaLabel: "Claude Code has stopped. Restart Claude Code.",
     action: "restart",
   },
+  start: {
+    label: "Start Tandem's Claude",
+    title: "Tandem's Claude isn't running. Click to start it.",
+    ariaLabel: "Start Tandem's Claude.",
+    action: "start",
+  },
 };
 
 /** A stopped launcher's CTA — also a tripped Tandem Claude surfaced beside a
- *  session that is still attached (`launcherFailure`). */
-export type LauncherFailure = Exclude<AiChip, null | "connect">;
+ *  session that is still attached (`launcherFailure`). Never `start`: a
+ *  standby is a choice, not a failure (#2195). */
+export type LauncherFailure = Exclude<AiChip, null | "connect" | "start">;
 
 /**
  * The `lastError` → CTA decision for a stopped launcher. ONE function, used by
@@ -475,6 +496,22 @@ export interface AiReadiness {
    *  read the raw retained status, so a failed read mid-restart cannot bring a
    *  Restart button back. */
   readonly launcherRestarting: boolean;
+  /**
+   * The restart in progress is a Start from standby (#2195): the user clicked
+   * Start on a Claude that was off, waiting, or idle-stopped, and the server
+   * reports the standby beside `restartPending`. The pill says "Starting
+   * Claude…" then, because "Restarting" claims a Claude that never ran in this
+   * session.
+   */
+  readonly launcherStarting: boolean;
+  /**
+   * Why Tandem's Claude is not running by choice (`LauncherStatus.standby`,
+   * #2195), or `null`. Read off the RAW retained status like `chip`, so one
+   * failed read does not flip a Start control back to a Restart one. A
+   * `lastError` outranks it on the server, so this is never set beside a
+   * failure.
+   */
+  readonly launcherStandby: LauncherStandby | null;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
    *  `countDistinctClients`), or `null` when unknown or unreachable. */
   readonly sessionCount: number | null;
@@ -923,6 +960,10 @@ export function createAiReadiness(deps: {
   const restartPending = $derived(
     status !== null && status.available && !status.running && status.restartPending === true,
   );
+  // Raw retained status, same reason as `restartPending`.
+  const launcherStandby = $derived<LauncherStandby | null>(
+    status !== null && status.available && !status.running ? (status.standby ?? null) : null,
+  );
 
   // `chip` is the ONE place the `lastError` → CTA decision is made (see the
   // `AiChip` doc comment for why `cli-unusable` — a server-side probe taken at
@@ -935,7 +976,9 @@ export function createAiReadiness(deps: {
       : state === "unconfigured"
         ? "connect"
         : state === "stopped" && !restartPending
-          ? chipForStoppedLauncher(lastError)
+          ? launcherStandby !== null
+            ? "start"
+            : chipForStoppedLauncher(lastError)
           : null,
   );
 
@@ -1026,6 +1069,14 @@ export function createAiReadiness(deps: {
     },
     get launcherRestarting() {
       return launcherRestarting;
+    },
+    get launcherStarting() {
+      // The server keeps `standby` beside `restartPending` while a Start from
+      // standby runs, so this is a reading of the status, not of its history.
+      return launcherRestarting && launcherStandby !== null;
+    },
+    get launcherStandby() {
+      return launcherStandby;
     },
     get sessionCount() {
       return sessionCount;

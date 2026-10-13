@@ -2,7 +2,9 @@
  * Wire contract for the auto-launcher routes (#477 PR 4b).
  *
  * Server: `src/server/launcher/api-routes.ts`.
- * Client: `src/client/launcher/*` (palette actions + settings picker).
+ * Client: `src/client/hooks/useAiReadiness.svelte.ts` (status), the launcher
+ * actions in `src/client/actions/builtin.svelte.ts`, and the AI Assistant
+ * settings tab.
  *
  * The launcher routes are HTTP-mode-only and only useful when a
  * `claude-code` integration with `apply !== "skip"` exists in
@@ -40,6 +42,13 @@ export type LauncherStatus =
        * a Restart button that would race it (#2180). Absent from an older
        * server, which reads as today's behaviour. */
       restartPending?: true;
+      /** Loopback-only. Tandem's Claude is not running BY CHOICE (#2195): the
+       * start mode is off, it is waiting for the user's Start, or it was
+       * stopped while idle. Never sent beside a `lastError` (a stop that
+       * failed is a diagnosis, not a choice). Beside `restartPending` it means
+       * a Start from standby is under way — "Starting", not "Restarting".
+       * Absent from an older server. */
+      standby?: LauncherStandby;
       /** Loopback-only. `null` when last refresh succeeded. */
       skillRefresh?: SkillRefreshError | null;
     }
@@ -159,6 +168,109 @@ export type LauncherErrorCode =
   | "needs-login"
   | "unlicensed";
 
+// --- Start / lifetime setting (#2195) -------------------------------------
+
+/**
+ * Why Tandem's Claude is not running when nothing went wrong (#2195).
+ *   - `off` — the start mode is off (the user turned it off).
+ *   - `awaiting-start` — the start mode is `on-click` and nobody has clicked
+ *     Start yet, or the mode was switched back on from off.
+ *   - `idle` — the lifetime is `idle` and it went the configured time without
+ *     a turn, so the supervisor stopped it.
+ */
+export type LauncherStandby = "off" | "awaiting-start" | "idle";
+
+/** `auto` starts Tandem's Claude when Tandem starts; `on-click` waits for the
+ * user's Start; `off` never starts it on its own. */
+export type LauncherStartMode = "auto" | "on-click" | "off";
+/** `always` keeps it running; `idle` stops it after `idleMinutes` without a
+ * turn (measured from the end of the last turn — Bryan, 2026-10-13). */
+export type LauncherLifetime = "always" | "idle";
+
+export interface LauncherSettings {
+  startMode: LauncherStartMode;
+  lifetime: LauncherLifetime;
+  idleMinutes: number;
+}
+
+export const LAUNCHER_START_MODES: readonly LauncherStartMode[] = ["auto", "on-click", "off"];
+export const LAUNCHER_LIFETIMES: readonly LauncherLifetime[] = ["always", "idle"];
+export const LAUNCHER_IDLE_MINUTES_MIN = 1;
+/** Kept far below `setTimeout`'s 2^31-1 ms ceiling (~35,791 minutes): past it
+ * Node fires the timer at once, which would turn "stop after a long idle" into
+ * "stop immediately". */
+export const LAUNCHER_IDLE_MINUTES_MAX = 1440;
+
+/** Bryan, 2026-10-12: start automatically, always running, 30-minute idle
+ * default. Identical to the behaviour before the setting existed, so an install
+ * with no settings file is unchanged. */
+export const DEFAULT_LAUNCHER_SETTINGS: Readonly<LauncherSettings> = Object.freeze({
+  startMode: "auto",
+  lifetime: "always",
+  idleMinutes: 30,
+});
+
+/** A partial update — the only shape the POST accepts. Whole-object writes let
+ * a stale snapshot (a second window, a Settings tab opened before Turn off)
+ * silently put back a choice the user had just changed. */
+export type LauncherSettingsPatch = Partial<LauncherSettings>;
+
+export function isLauncherStartMode(v: unknown): v is LauncherStartMode {
+  return typeof v === "string" && (LAUNCHER_START_MODES as readonly string[]).includes(v);
+}
+
+export function isLauncherLifetime(v: unknown): v is LauncherLifetime {
+  return typeof v === "string" && (LAUNCHER_LIFETIMES as readonly string[]).includes(v);
+}
+
+export function isLauncherIdleMinutes(v: unknown): v is number {
+  return (
+    typeof v === "number" &&
+    Number.isInteger(v) &&
+    v >= LAUNCHER_IDLE_MINUTES_MIN &&
+    v <= LAUNCHER_IDLE_MINUTES_MAX
+  );
+}
+
+/** Validate a POST patch: an object with at least one known field, every field
+ * present valid, and nothing else. Returns the patch or the offending field. */
+export function parseLauncherSettingsPatch(
+  raw: unknown,
+): { ok: true; patch: LauncherSettingsPatch } | { ok: false; field: string } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ok: false, field: "patch" };
+  const r = raw as Record<string, unknown>;
+  const keys = Object.keys(r);
+  if (keys.length === 0) return { ok: false, field: "patch" };
+  const patch: LauncherSettingsPatch = {};
+  for (const key of keys) {
+    const v = r[key];
+    if (key === "startMode" && isLauncherStartMode(v)) patch.startMode = v;
+    else if (key === "lifetime" && isLauncherLifetime(v)) patch.lifetime = v;
+    else if (key === "idleMinutes" && isLauncherIdleMinutes(v)) patch.idleMinutes = v;
+    else return { ok: false, field: key };
+  }
+  return { ok: true, patch };
+}
+
+/** A full settings body (the GET answer), or null if it is not one. The client
+ * keeps its controls disabled until a read passes this. */
+export function parseLauncherSettings(raw: unknown): LauncherSettings | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (!isLauncherStartMode(r.startMode)) return null;
+  if (!isLauncherLifetime(r.lifetime)) return null;
+  if (!isLauncherIdleMinutes(r.idleMinutes)) return null;
+  return { startMode: r.startMode, lifetime: r.lifetime, idleMinutes: r.idleMinutes };
+}
+
+/** `GET /api/launcher/settings` answer. `readOnly` is set when the file was
+ * written by a newer Tandem: its known fields are shown, but a save is refused
+ * rather than overwriting fields this build does not know. */
+export interface LauncherSettingsResponse {
+  settings: LauncherSettings;
+  readOnly?: true;
+}
+
 /** Loopback-only side-channel for bundled-skill refresh failures. The user
  * has no other signal that the skill is stale, so `/status` surfaces this
  * for the palette/settings UI to convert into a notification. */
@@ -259,6 +371,10 @@ export const LAUNCHER_ERROR_REAPER_NOT_FOUND = "REAPER_NOT_FOUND";
 /** A relaunch / start-fresh / deferred start was refused because Tandem is
  * unlicensed (#1521). Answered 403 with the licence refusal envelope. */
 export const LAUNCHER_ERROR_UNLICENSED = "LAUNCHER_UNLICENSED";
+/** `POST /api/launcher/settings` refused because `launcher-settings.json` was
+ * written by a newer Tandem (#2195). Answered 409 rather than overwriting
+ * fields this build cannot see. */
+export const LAUNCHER_ERROR_SETTINGS_NEWER = "LAUNCHER_SETTINGS_NEWER";
 
 /** Marker substring the supervisor embeds in the "binary not found" throw and
  * the launcher route matches on to map it to `LAUNCHER_ERROR_REAPER_NOT_FOUND`.

@@ -21,6 +21,8 @@ function view(over: Partial<ViewInput> = {}) {
     launcherBusy: false,
     launcherAttached: false,
     launcherRestarting: false,
+    launcherStarting: false,
+    launcherStandby: null,
     docSyncConnected: true,
     sessionCount: null,
     ...over,
@@ -154,7 +156,7 @@ describe("aiIndicatorView — Tandem's Claude", () => {
       ownActivity: null,
     });
     expect(v?.title).toBe(
-      "Tandem's Claude is running in ~/notes. Tandem wakes it when you send a message.",
+      "Tandem's Claude is running in ~/notes in the background. Tandem wakes it when you send a message.",
     );
     // No reply/latency promise: the attached session may not be this child.
     expect(v?.title).not.toMatch(/reply|minute/i);
@@ -166,7 +168,7 @@ describe("aiIndicatorView — Tandem's Claude", () => {
     const v = view({ ...running, liveIndicator: "connected" });
     expect(v).toMatchObject({ label: "Tandem's Claude", tone: "pending", canAnimate: false });
     expect(v?.title).toBe(
-      "Tandem's Claude is running in ~/notes. Tandem wakes it when you send a message. Tandem can't confirm that any connection is this Claude.",
+      "Tandem's Claude is running in ~/notes in the background. Tandem wakes it when you send a message. Tandem can't confirm that any connection is this Claude.",
     );
   });
 
@@ -221,7 +223,9 @@ describe("aiIndicatorView — Tandem's Claude", () => {
 
   it("drops the folder clause when the cwd is unknown", () => {
     const v = view({ launcherRunning: true, liveIndicator: "connected", launcherAttached: true });
-    expect(v?.title).toBe("Tandem's Claude is running. Tandem wakes it when you send a message.");
+    expect(v?.title).toBe(
+      "Tandem's Claude is running in the background. Tandem wakes it when you send a message.",
+    );
   });
 });
 
@@ -403,7 +407,13 @@ describe("cwdDriftPill", () => {
   };
 
   it("renders when nothing else objects", () => {
-    expect(cwdDriftPill(DRIFT, null, null, false)?.label).toBe("Claude in notes");
+    expect(cwdDriftPill(DRIFT, null, null, false, null)?.label).toBe("Claude in notes");
+  });
+
+  it("yields to a stopped Claude (#2195): a stale folder note must not offer to start it somewhere", () => {
+    for (const standby of ["off", "awaiting-start", "idle"] as const) {
+      expect(cwdDriftPill(DRIFT, null, null, false, standby)).toBeNull();
+    }
   });
 
   it("yields to a CTA rather than sitting next to one", () => {
@@ -411,7 +421,7 @@ describe("cwdDriftPill", () => {
     // and the server reports drift only when it is. Overlap is staleness, and a
     // stale folder note beside a live "Restart Claude Code" is #1268's shape.
     for (const chip of ["connect", "setup", "restart"] as const) {
-      expect(cwdDriftPill(DRIFT, chip, null, false)).toBeNull();
+      expect(cwdDriftPill(DRIFT, chip, null, false, null)).toBeNull();
     }
   });
 
@@ -419,22 +429,22 @@ describe("cwdDriftPill", () => {
     // `useCwdDrift` does not poll, so a drift answer from before an unattended
     // trip stays live while `aiChip` is null (another session is attached).
     for (const failure of ["restart", "sign-in", "setup"] as const) {
-      expect(cwdDriftPill(DRIFT, null, failure, false)).toBeNull();
+      expect(cwdDriftPill(DRIFT, null, failure, false, null)).toBeNull();
     }
   });
 
   it("yields while Tandem restarts its Claude (#2180)", () => {
     // During a restart neither CTA shows, so nothing else would hide a drift
     // answer from before the crash.
-    expect(cwdDriftPill(DRIFT, null, null, true)).toBeNull();
+    expect(cwdDriftPill(DRIFT, null, null, true, null)).toBeNull();
   });
 
   it("says nothing when there is no drift", () => {
-    expect(cwdDriftPill(null, null, null, false)).toBeNull();
+    expect(cwdDriftPill(null, null, null, false, null)).toBeNull();
   });
 
   it("names the consequence rather than a connection state", () => {
-    const pill = cwdDriftPill(DRIFT, null, null, false);
+    const pill = cwdDriftPill(DRIFT, null, null, false, null);
     expect(pill?.title).toContain("CLAUDE.md");
     expect(pill?.title).toContain("git history");
     expect(pill?.title).toContain("read and edit this document");
@@ -442,13 +452,15 @@ describe("cwdDriftPill", () => {
 
   it("carries both full paths in the aria-label, not only the title", () => {
     // `title` is unreachable by keyboard, touch and assistive tech.
-    const pill = cwdDriftPill(DRIFT, null, null, false);
+    const pill = cwdDriftPill(DRIFT, null, null, false, null);
     expect(pill?.ariaLabel).toContain(DRIFT.claudeCwd);
     expect(pill?.ariaLabel).toContain(DRIFT.suggestedCwd);
   });
 
   it("names the destination folder in the action row", () => {
-    expect(cwdDriftPill(DRIFT, null, null, false)?.actionLabel).toBe("Restart Claude in alpha…");
+    expect(cwdDriftPill(DRIFT, null, null, false, null)?.actionLabel).toBe(
+      "Restart Claude in alpha…",
+    );
   });
 });
 
@@ -475,5 +487,40 @@ describe("visibleLauncherFailure", () => {
   it("shows nothing with no failure", () => {
     expect(visibleLauncherFailure(null, dismissedRestart, 3)).toBeNull();
     expect(visibleLauncherFailure(null, null, 3)).toBeNull();
+  });
+});
+
+describe("aiIndicatorView — standby (#2195)", () => {
+  it("shows the standby, not 'AI not connected'", () => {
+    const v = view({ state: "stopped", launcherStandby: "off" });
+    expect(v?.dataState).toBe("standby");
+    expect(v?.label).toBe("Tandem's Claude is off");
+    expect(v?.tone).toBe("not-connected");
+  });
+
+  it("outranks the stopped child's leftover live session, so Turn off never shows a green 'AI attached'", () => {
+    const v = view({
+      state: "ready",
+      liveIndicator: "connected",
+      sessionCount: 1,
+      launcherStandby: "off",
+    });
+    expect(v?.dataState).toBe("standby");
+  });
+
+  it("Solo still wins, as for every other launcher state", () => {
+    expect(view({ soloMode: true, launcherStandby: "idle" })).toBeNull();
+  });
+
+  it("a restart in progress outranks a stale standby", () => {
+    expect(
+      view({ state: "stopped", launcherStandby: "off", launcherRestarting: true })?.dataState,
+    ).toBe("restarting");
+  });
+
+  it("a start from standby reads 'Starting Claude…'", () => {
+    expect(
+      view({ state: "stopped", launcherRestarting: true, launcherStarting: true })?.label,
+    ).toBe("Starting Claude…");
   });
 });

@@ -952,7 +952,7 @@ describe("createAiReadiness", () => {
  * to stop, so the wrong branch is actively harmful, not merely mislabelled.
  */
 describe("AI_CTA", () => {
-  const CHIPS: Exclude<AiChip, null>[] = ["connect", "setup", "sign-in", "restart"];
+  const CHIPS: Exclude<AiChip, null>[] = ["connect", "setup", "sign-in", "restart", "start"];
 
   it("covers every non-null chip with non-empty copy", () => {
     // Guards against a future union member landing with no entry: the type
@@ -1689,6 +1689,89 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(h.get().state).toBe("unconfigured");
       expect(h.get().chip).toBe("connect");
+    });
+  });
+
+  describe("standby (#2195)", () => {
+    const standby = (kind: string) => () =>
+      mkResponse({ available: true, running: false, standby: kind });
+
+    for (const kind of ["off", "awaiting-start", "idle"] as const) {
+      it(`${kind}: offers Start — never Restart, never a failure`, async () => {
+        globalThis.fetch = routedFetch({
+          launcher: standby(kind),
+          health: mkResponse({ status: "ok", hasSession: false }),
+        });
+        const h = mount();
+        await settle();
+        expect(h.get().state).toBe("stopped");
+        expect(h.get().launcherStandby).toBe(kind);
+        expect(h.get().chip).toBe("start");
+        expect(h.get().launcherFailure).toBeNull();
+        expect(h.get().launcherRestarting).toBe(false);
+      });
+    }
+
+    it("beside the stopped child's leftover live session: no failure button, standby still known", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: standby("off"),
+        health: mkResponse({ status: "ok", hasSession: true, sessionCount: 1 }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherStandby).toBe("off");
+      expect(h.get().launcherFailure).toBeNull();
+    });
+
+    it("Solo hides the chip, as for every other CTA", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: standby("idle"),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().chip).toBeNull();
+      expect(h.get().launcherStandby).toBe("idle");
+    });
+
+    it("a restart the server reports beside a standby is a start, not a restart", async () => {
+      let phase: "standby" | "pending" | "running" = "standby";
+      globalThis.fetch = routedFetch({
+        launcher: () =>
+          phase === "standby"
+            ? mkResponse({ available: true, running: false, standby: "off" })
+            : phase === "pending"
+              ? mkResponse({
+                  available: true,
+                  running: false,
+                  restartPending: true,
+                  standby: "off",
+                })
+              : mkResponse({ available: true, running: true, cwd: "/home/u/notes" }),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      phase = "pending";
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherRestarting).toBe(true);
+      expect(h.get().launcherStarting).toBe(true);
+      phase = "running";
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherStarting).toBe(false);
+    });
+
+    it("control: a restart with no standby before it is a restart", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse({ available: true, running: false, restartPending: true }),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherRestarting).toBe(true);
+      expect(h.get().launcherStarting).toBe(false);
     });
   });
 

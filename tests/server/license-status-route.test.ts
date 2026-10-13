@@ -396,6 +396,12 @@ describe("POST /api/license/activate is wired to the launcher (#1521)", () => {
       refreshConfigured: async () => {},
       resumeAfterLicence: resume,
       licenceRefusal: () => null,
+      startByUser: async () => ({ spawned: true as const }),
+      updateSettings: async () => ({
+        startMode: "auto" as const,
+        lifetime: "always" as const,
+        idleMinutes: 30,
+      }),
       status: () => ({ running: false as const }),
     };
     const port = await allocPort();

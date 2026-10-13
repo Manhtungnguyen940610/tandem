@@ -43,6 +43,15 @@ interface Props {
   /** Bind to get a reference to the textarea element. */
   inputEl?: HTMLTextAreaElement | null;
   reduceMotion?: boolean;
+  /**
+   * The Start / Turn off control for Tandem's Claude (#2195): `turn-off` while
+   * it runs, `start` while it is in standby, `null` to hide. Required, with its
+   * two handlers: PanelSlot's loose `[key: string]: any` arm would otherwise let
+   * a forgotten prop compile and the control silently never render.
+   */
+  tandemClaudeControl: "start" | "turn-off" | null;
+  onStartClaude: () => void;
+  onTurnOffClaude: () => void;
 }
 
 let {
@@ -61,7 +70,25 @@ let {
   canInsert = false,
   inputEl = $bindable(null),
   reduceMotion,
+  tandemClaudeControl,
+  onStartClaude,
+  onTurnOffClaude,
 }: Props = $props();
+
+// One lookup for the control's copy, keyed like the prop. A double click needs
+// no guard here: both actions take the launcher claim before any request, so
+// a second click while the first is in flight is refused with a notice.
+const TANDEM_CLAUDE_CONTROL = {
+  start: {
+    text: "Start Tandem's Claude",
+    title: "Start Tandem's Claude. Its conversation resumes.",
+  },
+  "turn-off": {
+    text: "Turn off Tandem's Claude",
+    title:
+      "Turn off Tandem's Claude. It stays off, including the next time Tandem starts, until you start it again.",
+  },
+} as const;
 
 const scrollBehavior: ScrollBehavior = $derived(reduceMotion ? "auto" : "smooth");
 
@@ -275,10 +302,28 @@ async function exportChat() {
        overriding only `font-size`; the unread pill sets no weight of its own.
        All three inherit 600 from here, so dropping it demotes all three to 400.
        `--tandem-text-md` really was inert — nothing in the row consumes it. -->
-  {#if messages.length > 0}
+  {#if messages.length > 0 || tandemClaudeControl}
     <div
       style="padding: var(--tandem-space-3) var(--tandem-space-4); border-bottom: 1px solid var(--tandem-border); font-weight: 600; display: flex; align-items: center; justify-content: flex-end; gap: var(--tandem-space-2);"
     >
+      {#if tandemClaudeControl}
+        <!-- #2195. One button whose label flips, not two {#if} siblings, so
+             focus survives the change. Outside the messages gate: an empty
+             chat is exactly where Start is needed. Its name says "Tandem's
+             Claude" because a hand-started session may be attached too, and
+             this acts only on Tandem's own. -->
+        <button
+          type="button"
+          onclick={tandemClaudeControl === "start" ? onStartClaude : onTurnOffClaude}
+          data-testid="chat-tandem-claude-toggle"
+          data-action={tandemClaudeControl}
+          title={TANDEM_CLAUDE_CONTROL[tandemClaudeControl].title}
+          class="chat-header-action"
+          style="margin-right: auto;"
+        >
+          {TANDEM_CLAUDE_CONTROL[tandemClaudeControl].text}
+        </button>
+      {/if}
       {#if unreadCount > 0}
         <!-- The count was legible as "Chat 3" by adjacency; alone it is a bare
              number, so it needs the label the word used to supply. Matches how
@@ -290,23 +335,25 @@ async function exportChat() {
           {unreadCount}
         </span>
       {/if}
-      <button
-        onclick={exportChat}
-        disabled={exporting}
-        title="Export complete chat to a scratchpad"
-        class="chat-header-action"
-      >
-        {exporting ? "Exporting…" : "Export"}
-      </button>
-      <button
-        onclick={clearChat}
-        disabled={clearing}
-        title="Clear chat history"
-        data-testid="clear-chat-btn"
-        class="chat-header-action"
-      >
-        {clearing ? "Clearing…" : "Clear"}
-      </button>
+      {#if messages.length > 0}
+        <button
+          onclick={exportChat}
+          disabled={exporting}
+          title="Export complete chat to a scratchpad"
+          class="chat-header-action"
+        >
+          {exporting ? "Exporting…" : "Export"}
+        </button>
+        <button
+          onclick={clearChat}
+          disabled={clearing}
+          title="Clear chat history"
+          data-testid="clear-chat-btn"
+          class="chat-header-action"
+        >
+          {clearing ? "Clearing…" : "Clear"}
+        </button>
+      {/if}
     </div>
   {/if}
 
