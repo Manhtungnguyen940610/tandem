@@ -1455,6 +1455,29 @@ describe("GET /api/launcher/status — standby (#2195)", () => {
     expect(res.body).toEqual({ available: true, running: false });
   });
 
+  it.each([
+    ["the plain stopped shape", {}],
+    ["a start under way", { restartPending: true as const }],
+  ])("passes startsOnMessage to loopback callers beside %s (#2196)", async (_label, extra) => {
+    const sup: Supervisor = {
+      ...makeFakeSupervisor(),
+      status: () => ({ running: false, standby: "off", startsOnMessage: true, ...extra }),
+    };
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "GET", "/api/launcher/status");
+    expect(res.body).toMatchObject({ standby: "off", startsOnMessage: true });
+  });
+
+  it("withholds startsOnMessage from non-loopback callers (#2196)", async () => {
+    const sup: Supervisor = {
+      ...makeFakeSupervisor(),
+      status: () => ({ running: false, standby: "off", startsOnMessage: true }),
+    };
+    const { app } = makeApp(baseDeps(sup), { remoteAddress: "192.168.1.50" });
+    const res = await request(app, "GET", "/api/launcher/status");
+    expect(res.body).toEqual({ available: true, running: false });
+  });
+
   it("not-configured outranks standby", async () => {
     const sup: Supervisor = {
       ...makeFakeSupervisor(),

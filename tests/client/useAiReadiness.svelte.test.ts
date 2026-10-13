@@ -1763,6 +1763,53 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       expect(h.get().launcherStarting).toBe(false);
     });
 
+    it("startsOnMessage (#2196): read from the status, and false without it", async () => {
+      let body: Record<string, unknown> = {
+        available: true,
+        running: false,
+        standby: "off",
+        startsOnMessage: true,
+      };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherStartsOnMessage).toBe(true);
+      body = { available: true, running: false, standby: "off" };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherStartsOnMessage).toBe(false);
+    });
+
+    it("launcherRemedy (#2196) is chip's decision with neither of its gates", async () => {
+      let body: Record<string, unknown> = { available: true, running: false, standby: "off" };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        // A live session hides `chip`; the remedy must survive it.
+        health: mkResponse({ status: "ok", hasSession: true, sessionCount: 1 }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().chip).toBeNull();
+      expect(h.get().launcherRemedy).toBe("start");
+      const cases: Array<[Record<string, unknown>, string | null]> = [
+        [{ available: true, running: false, lastError: "needs-login" }, "sign-in"],
+        [{ available: true, running: false, lastError: "cli-unusable" }, "setup"],
+        [{ available: true, running: false, lastError: "spawn-failed" }, "restart"],
+        [{ available: false, reason: "not-configured" }, "connect"],
+        [{ available: true, running: false, restartPending: true, standby: "off" }, null],
+        [{ available: true, running: true, cwd: "/home/u" }, null],
+      ];
+      for (const [next, want] of cases) {
+        body = next;
+        h.get().refreshLauncherStatus();
+        await settle();
+        expect(h.get().launcherRemedy, JSON.stringify(next)).toBe(want);
+      }
+    });
+
     it("a standby is 'recent' for its first minute only", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       try {

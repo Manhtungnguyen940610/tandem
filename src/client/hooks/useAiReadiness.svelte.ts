@@ -520,6 +520,22 @@ export interface AiReadiness {
    * as connected.
    */
   readonly launcherStandbyRecent: boolean;
+  /**
+   * A chat message sent now would start Tandem's Claude
+   * (`LauncherStatus.startsOnMessage`, #2196): it is in standby, no other AI is
+   * attached and the licence admits it. Raw status, like `launcherStandby`, and
+   * false while the server is unreachable — a send then goes nowhere.
+   */
+  readonly launcherStartsOnMessage: boolean;
+  /**
+   * The remedy for a Tandem's Claude that is not running, UN-gated (#2196):
+   * `chip`'s decision without its Solo and live-session gates, which hide it
+   * whenever any session is live. The chat panel's "couldn't start" row needs
+   * the remedy even then, because it is about Tandem's Claude specifically.
+   * `null` while it runs, while a start or restart is under way, and while
+   * the status is unknown or transient.
+   */
+  readonly launcherRemedy: Exclude<AiChip, null> | null;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
    *  `countDistinctClients`), or `null` when unknown or unreachable. */
   readonly sessionCount: number | null;
@@ -986,6 +1002,26 @@ export function createAiReadiness(deps: {
   const launcherStandbyRecent = $derived(
     status !== null && standbySince !== null && Date.now() - standbySince < STANDBY_LEFTOVER_MS,
   );
+  const launcherStartsOnMessage = $derived(
+    status !== null &&
+      status.available &&
+      !status.running &&
+      status.startsOnMessage === true &&
+      !serverUnreachable,
+  );
+  const launcherRemedy = $derived<Exclude<AiChip, null> | null>(
+    status === null
+      ? null
+      : !status.available
+        ? isTransientlyUnavailable(status.reason)
+          ? null
+          : "connect"
+        : status.running || restartPending
+          ? null
+          : launcherStandby !== null
+            ? "start"
+            : chipForStoppedLauncher(lastError),
+  );
 
   // `chip` is the ONE place the `lastError` → CTA decision is made (see the
   // `AiChip` doc comment for why `cli-unusable` — a server-side probe taken at
@@ -1102,6 +1138,12 @@ export function createAiReadiness(deps: {
     },
     get launcherStandbyRecent() {
       return launcherStandbyRecent;
+    },
+    get launcherStartsOnMessage() {
+      return launcherStartsOnMessage;
+    },
+    get launcherRemedy() {
+      return launcherRemedy;
     },
     get sessionCount() {
       return sessionCount;

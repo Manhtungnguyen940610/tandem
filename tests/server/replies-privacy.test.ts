@@ -24,11 +24,15 @@ import { Y_MAP_ANNOTATION_REPLIES, Y_MAP_ANNOTATIONS } from "../../src/shared/co
 import { toFlatOffset } from "../../src/shared/positions/types.js";
 import type { Annotation, AnnotationReply, AnnotationType } from "../../src/shared/types.js";
 
-function seedParentAnnotation(doc: Y.Doc, type: AnnotationType): string {
+function seedParentAnnotation(
+  doc: Y.Doc,
+  type: AnnotationType,
+  author: Annotation["author"] = "user",
+): string {
   const annId = `ann_${type}_${Math.random().toString(36).slice(2, 8)}`;
   const annotation: Annotation = {
     id: annId,
-    author: "user",
+    author,
     type,
     range: { from: toFlatOffset(0), to: toFlatOffset(5) },
     content: type === "highlight" ? "" : "parent annotation body",
@@ -55,7 +59,10 @@ function addUserReply(doc: Y.Doc, annotationId: string, text: string): string {
   return id;
 }
 
-function setup(parentType: AnnotationType): {
+function setup(
+  parentType: AnnotationType,
+  parentAuthor: Annotation["author"] = "user",
+): {
   doc: Y.Doc;
   events: TandemEvent[];
   dispose: () => void;
@@ -63,7 +70,7 @@ function setup(parentType: AnnotationType): {
 } {
   const doc = new Y.Doc();
   const events: TandemEvent[] = [];
-  const parentId = seedParentAnnotation(doc, parentType);
+  const parentId = seedParentAnnotation(doc, parentType, parentAuthor);
   const dispose = makeRepliesObserver({
     docName: `doc_${parentType}`,
     doc,
@@ -86,6 +93,16 @@ describe("replies observer — ADR-027 privacy guard", () => {
     });
     dispose();
   });
+
+  it.each(["claude", "user"] as const)(
+    "carries the parent's author (%s), which decides whether a reply starts Claude (#2196)",
+    (author) => {
+      const { doc, events, dispose, parentId } = setup("comment", author);
+      addUserReply(doc, parentId, "reply body");
+      expect(events[0].payload).toMatchObject({ parentAuthor: author });
+      dispose();
+    },
+  );
 
   it("does NOT fire for a reply on a note (user-private per ADR-027)", () => {
     const { doc, events, dispose, parentId } = setup("note");

@@ -122,7 +122,9 @@ instead. (`launcher/status`'s loopback-only fields include `busy`, whether Tande
 Claude has a turn in flight, and `attached`, whether its own MCP connection is live — activity
 and presence traces of the person at the machine, scrubbed for the same reason as `/health`'s
 `delivery` and `sessionCount`. `standby` (#2195) is the same class and weaker than `busy`: an `idle`
-standby says no turn ran for the configured time. `GET /api/launcher/settings` refuses a
+standby says no turn ran for the configured time. `startsOnMessage` (#2196) says, beside a standby,
+whether another AI session is attached — the same presence fact `/health`'s loopback-only
+`sessionCount` already gives. `GET /api/launcher/settings` refuses a
 non-loopback caller by hand and has no origin gate: a browser sends no `Origin` on a same-origin
 GET (measured against Chromium, 2026-10-13), so the gate would refuse the npm build's own editor,
 and the read has no side effect for it to protect. For the same reason `GET /api/launcher/nonce`

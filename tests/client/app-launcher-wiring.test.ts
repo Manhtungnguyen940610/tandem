@@ -42,3 +42,27 @@ describe("App launcher wiring (#2195)", () => {
     expect(APP).toMatch(/start: startClaude,/);
   });
 });
+
+describe("App resume-row wiring (#2196)", () => {
+  it("the chat panel mount passes the resume row and its remedy handler", () => {
+    const mount = chatMount();
+    expect(mount).toMatch(/\{tandemClaudeResume\}/);
+    expect(mount).toMatch(/\{onResumeRemedy\}/);
+  });
+
+  it("a send notes the request BEFORE the addressed-ai dispatch whose toast reads it", () => {
+    const send = APP.slice(APP.indexOf("function sendChatMessage("));
+    const noted = send.indexOf("chatResumeState.noteSent();");
+    const dispatched = send.indexOf('"tandem:addressed-ai"');
+    expect(noted).toBeGreaterThan(-1);
+    expect(dispatched).toBeGreaterThan(noted);
+  });
+
+  it("the no-agent toast stands aside for a chat that is starting Claude, and only for chat", () => {
+    expect(APP).toMatch(/if \(viaKey === "chat" && chatResumeState\.pending\) return;/);
+  });
+
+  it("the remedy routes through the AiCtaAction record", () => {
+    expect(APP).toMatch(/AI_CTA_HANDLERS\[AI_CTA\[remedy\]\.action\]\(\)/);
+  });
+});

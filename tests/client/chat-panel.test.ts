@@ -1,8 +1,10 @@
 // @vitest-environment happy-dom
 
-import { render } from "@testing-library/svelte";
+import { cleanup, render } from "@testing-library/svelte";
 import { describe, expect, it, vi } from "vitest";
+import { AI_CTA } from "../../src/client/hooks/useAiReadiness.svelte";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
+import type { ChatResume } from "../../src/client/panels/chat-resume";
 import type { ChatMessage } from "../../src/shared/types";
 
 function renderChat(messages: ChatMessage[]) {
@@ -21,6 +23,8 @@ function renderChat(messages: ChatMessage[]) {
       tandemClaudeControl: null,
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
+      tandemClaudeResume: null,
+      onResumeRemedy: () => {},
     },
   });
 }
@@ -151,6 +155,8 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
         tandemClaudeControl: control,
         onStartClaude,
         onTurnOffClaude,
+        tandemClaudeResume: null,
+        onResumeRemedy: () => {},
       },
     });
     const btn = result.container.querySelector<HTMLButtonElement>(
@@ -179,5 +185,63 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
 
   it("is absent when there is nothing to start or stop", () => {
     expect(renderWithControl(null).btn).toBeNull();
+  });
+});
+
+describe("ChatPanel — the resume row (#2196)", () => {
+  function renderWithResume(resume: ChatResume | null, messages: ChatMessage[] = []) {
+    const onResumeRemedy = vi.fn();
+    const result = render(ChatPanel, {
+      props: {
+        messages,
+        editor: null,
+        activeDocId: null,
+        openDocs: [],
+        capturedAnchor: null,
+        onCapturedAnchorChange: () => {},
+        onSend: () => true,
+        onClear: async () => {},
+        onExport: async () => {},
+        onInsert: () => false,
+        tandemClaudeControl: null,
+        onStartClaude: () => {},
+        onTurnOffClaude: () => {},
+        tandemClaudeResume: resume,
+        onResumeRemedy,
+      },
+    });
+    const q = (id: string) => result.container.querySelector<HTMLElement>(`[data-testid='${id}']`);
+    return { ...result, q, onResumeRemedy };
+  }
+
+  const unread = (): ChatMessage =>
+    claudeMsg({ id: "u1", author: "user", text: "are you there?", timestamp: Date.now() });
+
+  it("resuming replaces the pickup row, and the one live region says resuming", () => {
+    // Positive control: the same unread message shows the pickup row with no resume.
+    expect(renderWithResume(null, [unread()]).q("chat-pickup-status")).not.toBeNull();
+    cleanup();
+    const { q } = renderWithResume({ kind: "resuming", verb: "resuming" }, [unread()]);
+    expect(q("chat-tandem-claude-resuming")?.textContent).toContain("Claude is resuming…");
+    expect(q("chat-pickup-status")).toBeNull();
+    expect(q("chat-pickup-live")?.textContent).toContain("Claude is resuming…");
+  });
+
+  it("says starting for a Claude that was off", () => {
+    const { q } = renderWithResume({ kind: "resuming", verb: "starting" });
+    expect(q("chat-tandem-claude-resuming")?.textContent).toContain("Starting Tandem's Claude…");
+  });
+
+  it("a failed start says the message is unanswered and its button runs the remedy", () => {
+    const { q, onResumeRemedy } = renderWithResume({ kind: "failed", remedy: "sign-in" }, [
+      unread(),
+    ]);
+    const row = q("chat-tandem-claude-resume-failed");
+    expect(row?.textContent).toContain("hasn't been answered");
+    expect(q("chat-pickup-status")).toBeNull();
+    const btn = q("chat-tandem-claude-resume-remedy") as HTMLButtonElement;
+    expect(btn.textContent?.trim()).toBe(AI_CTA["sign-in"].label);
+    btn.click();
+    expect(onResumeRemedy).toHaveBeenCalledWith("sign-in");
   });
 });

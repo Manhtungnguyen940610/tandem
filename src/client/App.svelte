@@ -57,7 +57,12 @@ import ScrollPill from "./editor/ScrollPill.svelte";
 import SourceView from "./editor/SourceView.svelte";
 import Toolbar from "./editor/toolbar/Toolbar.svelte";
 import { createAccentHue } from "./hooks/useAccentHue.svelte";
-import { AI_CTA, type AiCtaAction, createAiReadiness } from "./hooks/useAiReadiness.svelte";
+import {
+  AI_CTA,
+  type AiChip,
+  type AiCtaAction,
+  createAiReadiness,
+} from "./hooks/useAiReadiness.svelte";
 import {
   nextAnnotationId,
   prevAnnotationId,
@@ -124,6 +129,7 @@ import MarginColumn from "./panels/MarginColumn.svelte";
 import { isLeftMarginAnnotation, isRightMarginAnnotation } from "./panels/marginSides";
 import PeekStrip from "./panels/PeekStrip.svelte";
 import { useAnnotationReview } from "./panels/useAnnotationReview.svelte";
+import { createChatResume } from "./panels/useChatResume.svelte";
 import FormattingBar from "./shell/FormattingBar.svelte";
 import TitleBar from "./shell/TitleBar.svelte";
 import { addressedAiNotice } from "./status/addressed-ai-notice.js";
@@ -629,16 +635,28 @@ function turnOffClaude(): void {
   turnOffTandemClaude();
 }
 
+/** The chat panel's resume row (#2196): a chat sent while Tandem's Claude was
+ *  stopped by choice, which the server is starting it to answer. */
+const chatResumeState = createChatResume(aiReadiness);
+const tandemClaudeResume = $derived(chatResumeState.view);
+
 /** The chat panel's Start / Turn off control (#2195): Turn off while Tandem's
  *  Claude runs, Start while it is in standby, hidden otherwise (no launcher,
  *  a failure — whose own CTA is elsewhere — or a restart in progress). */
 const tandemClaudeControl = $derived<"start" | "turn-off" | null>(
   aiReadiness.launcherRunning
     ? "turn-off"
-    : aiReadiness.launcherStandby !== null && !aiReadiness.launcherRestarting
+    : // Hidden beside the resume row (#2196), which carries its own remedy.
+      aiReadiness.launcherStandby !== null &&
+        !aiReadiness.launcherRestarting &&
+        tandemClaudeResume === null
       ? "start"
       : null,
 );
+
+function onResumeRemedy(remedy: Exclude<AiChip, null>): void {
+  AI_CTA_HANDLERS[AI_CTA[remedy].action]();
+}
 
 /** Every `AiCtaAction` → its handler, in one place (#1268, #2195). A binary
  *  `action === "restart" ? … : …` would send the `start` CTA to the
@@ -677,6 +695,9 @@ $effect(() => {
   const handleAddressedAi = async (e: Event) => {
     const via = (e as CustomEvent<{ via?: string }>).detail?.via;
     const viaKey = via ?? "chat";
+    // A chat that is starting Tandem's Claude has the chat panel's resume row
+    // (#2196); a toast saying "nothing will answer" would contradict it.
+    if (viaKey === "chat" && chatResumeState.pending) return;
     const noun = via === "comment" ? "Comment" : "Message";
     // Solo short-circuits before the probe so those sends don't pay for a
     // fetch whose answer `addressedAiNotice` would discard anyway.
@@ -2131,6 +2152,8 @@ function sendChatMessage(text: string): boolean {
   const sent = chatState.send(text, yjsSync.activeTabId ?? undefined, railContent.capturedAnchor);
   if (!sent) return false;
   railContent.setCapturedAnchor(null);
+  // Before the dispatch below, whose no-agent toast reads it (#2196).
+  chatResumeState.noteSent();
   window.dispatchEvent(new CustomEvent("tandem:addressed-ai", { detail: { via: "chat" } }));
   railContent.closeReveal();
   return true;
@@ -2709,6 +2732,8 @@ const shouldShowModelPicker = $derived(
             tandemClaudeControl={tandemClaudeControl}
             onStartClaude={startClaude}
             onTurnOffClaude={turnOffClaude}
+            {tandemClaudeResume}
+            {onResumeRemedy}
             visible={chatVisible}
           />
           <PanelSlot

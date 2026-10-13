@@ -49,6 +49,12 @@ export type LauncherStatus =
        * a Start from standby is under way — "Starting", not "Restarting".
        * Absent from an older server. */
       standby?: LauncherStandby;
+      /** Loopback-only, and only beside `standby` (#2196): a chat message sent
+       * now would start Tandem's Claude — no other AI session is attached and
+       * the licence admits it. What the chat panel's "Claude is resuming…"
+       * promise keys on, so it is never shown for a message nothing will
+       * answer. Absent from an older server. */
+      startsOnMessage?: true;
       /** Loopback-only. `null` when last refresh succeeded. */
       skillRefresh?: SkillRefreshError | null;
     }

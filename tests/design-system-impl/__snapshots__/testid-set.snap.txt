@@ -50,6 +50,9 @@ chat-pickup-live
 chat-pickup-status
 chat-send-btn
 chat-tab
+chat-tandem-claude-resume-failed
+chat-tandem-claude-resume-remedy
+chat-tandem-claude-resuming
 chat-tandem-claude-toggle
 claude-typing-indicator-{*}
 claude-working-indicator

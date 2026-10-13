@@ -6,11 +6,13 @@ import type { CapturedAnchor, ChatMessage } from "../../shared/types";
 import { scrollFade } from "../actions/scrollFade.svelte.js";
 import LiveRegion from "../components/LiveRegion.svelte";
 import { createAgentLabel } from "../hooks/useAgentLabel.svelte";
+import { AI_CTA } from "../hooks/useAiReadiness.svelte";
 import { flatOffsetToPmPos } from "../positions";
 import { agentColor } from "../utils/agent-color";
 import { localChatDateLabel } from "./chat-export";
 import { renderMarkdown } from "./chat-markdown";
 import { chatPickup, chatPickupAnnouncement, chatPickupLabel } from "./chat-pickup";
+import { type ChatResume, chatResumeLabel } from "./chat-resume";
 import "./markdown-body.css";
 
 const TYPING_DOT_DELAYS = [0, 0.2, 0.4];
@@ -52,6 +54,15 @@ interface Props {
   tandemClaudeControl: "start" | "turn-off" | null;
   onStartClaude: () => void;
   onTurnOffClaude: () => void;
+  /**
+   * The "Claude is resuming…" row (#2196) — see `chat-resume.ts`. While it is
+   * set it REPLACES the pickup row: "waiting for your AI to pick it up" beside
+   * "Claude is resuming" would be two answers to one question. Required, with
+   * its handler, for the same PanelSlot reason as `tandemClaudeControl`.
+   */
+  tandemClaudeResume: ChatResume | null;
+  /** Runs the failed row's remedy (`AI_CTA[remedy].action`). */
+  onResumeRemedy: (remedy: Extract<ChatResume, { kind: "failed" }>["remedy"]) => void;
 }
 
 let {
@@ -73,6 +84,8 @@ let {
   tandemClaudeControl,
   onStartClaude,
   onTurnOffClaude,
+  tandemClaudeResume,
+  onResumeRemedy,
 }: Props = $props();
 
 // One lookup for the control's copy, keyed like the prop. A double click needs
@@ -113,7 +126,9 @@ $effect(() => {
 // reads the real time in the same evaluation. (Re-showing a hidden panel also
 // lands on the current time; `chat-panel-pickup.test.ts` pins that outcome.)
 let now = $state(Date.now());
-const pickup = $derived(chatPickup(messages, Math.max(now, Date.now())));
+const pickup = $derived(
+  tandemClaudeResume ? null : chatPickup(messages, Math.max(now, Date.now())),
+);
 const pickupKind = $derived(pickup?.kind ?? null);
 
 // Tick only while a row is showing in a panel that is not hidden, so the elapsed
@@ -451,7 +466,40 @@ async function exportChat() {
       </div>
     {/each}
 
-    {#if pickup}
+    {#if tandemClaudeResume?.kind === "resuming"}
+      <div
+        aria-hidden="true"
+        data-testid="chat-tandem-claude-resuming"
+        data-verb={tandemClaudeResume.verb}
+        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: var(--tandem-author-claude); display: flex; align-items: center; gap: var(--tandem-space-2);"
+      >
+        <span style="display: inline-flex; gap: 3px;">
+          {#each TYPING_DOT_DELAYS as delay (delay)}
+            <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
+          {/each}
+        </span>
+        <span>{chatResumeLabel(tandemClaudeResume)}</span>
+      </div>
+    {:else if tandemClaudeResume?.kind === "failed"}
+      {@const remedy = tandemClaudeResume.remedy}
+      <div
+        data-testid="chat-tandem-claude-resume-failed"
+        data-remedy={remedy}
+        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: var(--tandem-warning-fg-strong); display: flex; align-items: center; flex-wrap: wrap; gap: var(--tandem-space-2);"
+      >
+        <span aria-hidden="true">{chatResumeLabel(tandemClaudeResume)}</span>
+        <button
+          type="button"
+          class="chat-header-action"
+          data-testid="chat-tandem-claude-resume-remedy"
+          title={AI_CTA[remedy].title}
+          aria-label={AI_CTA[remedy].ariaLabel}
+          onclick={() => onResumeRemedy(remedy)}
+        >
+          {AI_CTA[remedy].label}
+        </button>
+      </div>
+    {:else if pickup}
       <div
         aria-hidden="true"
         data-testid="chat-pickup-status"
@@ -476,7 +524,13 @@ async function exportChat() {
     {/if}
     <!-- Announcer, not host: the row is a gapped flex item that comes and goes.
          Keyed on the kind only, so the ticking seconds are never read out. -->
-    <LiveRegion srOnly message={chatPickupAnnouncement(pickupKind)} data-testid="chat-pickup-live" />
+    <LiveRegion
+      srOnly
+      message={tandemClaudeResume
+        ? chatResumeLabel(tandemClaudeResume)
+        : chatPickupAnnouncement(pickupKind)}
+      data-testid="chat-pickup-live"
+    />
     <div bind:this={messagesEndEl}></div>
   </div>
 
