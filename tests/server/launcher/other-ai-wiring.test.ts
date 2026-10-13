@@ -28,3 +28,33 @@ describe("index.ts wires the launcher's other-AI check", () => {
     );
   });
 });
+
+describe("index.ts wires the one-time greeting (#2197)", () => {
+  // Both default to "never" in the supervisor, so without this wiring every
+  // behavioural test still passes while production never greets anyone.
+  it("passes the real marker and the chat seam into createSupervisor", () => {
+    const call = (INDEX.match(/createSupervisor\(\{[\s\S]*?\}\);/g) ?? [])[0] ?? "";
+    expect(call).toMatch(/isOwed: \(\) => isGreetingOwed\(appData\)/);
+    expect(call).toMatch(/markDone: \(\) => markGreeted\(appData, APP_VERSION\)/);
+    expect(call).toMatch(/subscribeClaudeChat: onClaudeChatAppended,/);
+  });
+
+  it("arms the greeting at boot from the version check, before the launcher starts", () => {
+    const arm = INDEX.indexOf("await armFirstRunGreeting(resolveAppDataDir(), {");
+    expect(arm).toBeGreaterThan(-1);
+    expect(INDEX.slice(arm, arm + 200)).toMatch(/firstInstall: versionChange === "first-install"/);
+    expect(arm).toBeLessThan(INDEX.indexOf("await startLauncherSupervisor();"));
+  });
+});
+
+describe("mcp/server.ts wires the wizard Apply to startAfterSetup (#2197)", () => {
+  const SERVER = fs.readFileSync(
+    path.join(import.meta.dirname, "../../../src/server/mcp/server.ts"),
+    "utf8",
+  );
+  it("the apply hook is the supervisor's startAfterSetup, not refreshConfigured", () => {
+    expect(SERVER).toMatch(
+      /onClaudeCodeApplied: launcher \? \(\) => launcher\.getSupervisor\(\)\?\.startAfterSetup\(\) : undefined,/,
+    );
+  });
+});

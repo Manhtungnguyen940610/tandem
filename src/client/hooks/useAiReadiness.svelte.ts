@@ -581,6 +581,11 @@ export interface AiReadiness {
    * the status is unknown or transient.
    */
   readonly launcherRemedy: AiRemedy | null;
+  /** Tandem's Claude was asked for its one-time greeting and none reached the
+   *  chat (`LauncherStatus.greetingLate`, #2197). Raw status, either arm (a
+   *  dead server clears `status` through the launcher's own floor). Not gated
+   *  on Solo: chat works there. */
+  readonly greetingLate: boolean;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
    *  `countDistinctClients`), or `null` when unknown or unreachable. */
   readonly sessionCount: number | null;
@@ -1154,6 +1159,9 @@ export function createAiReadiness(deps: {
   const launcherStandbyRecent = $derived(
     status !== null && standbySince !== null && Date.now() - standbySince < STANDBY_LEFTOVER_MS,
   );
+  const greetingLate = $derived(
+    status !== null && status.available && "greetingLate" in status && status.greetingLate === true,
+  );
   const launcherStartsOnMessage = $derived(
     status !== null &&
       status.available &&
@@ -1301,6 +1309,9 @@ export function createAiReadiness(deps: {
     },
     get launcherRemedy() {
       return launcherRemedy;
+    },
+    get greetingLate() {
+      return greetingLate;
     },
     get sessionCount() {
       return sessionCount;

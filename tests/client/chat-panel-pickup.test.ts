@@ -43,6 +43,8 @@ function renderChat(messages: ChatMessage[], visible: boolean | "omit" = true) {
       onTurnOffClaude: () => {},
       tandemClaudeResume: null,
       onResumeRemedy: () => {},
+      tandemClaudeGreetingLate: null,
+      onGreetingAction: () => {},
       aiDisabled: false,
     },
   });

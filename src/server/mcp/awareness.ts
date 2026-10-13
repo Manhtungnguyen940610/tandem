@@ -213,6 +213,20 @@ export type ClaudeChatAppend = { ok: true; id: string } | { ok: false; refusal: 
  * returning a bare id, so every caller has to handle the refusal explicitly.
  * The user's own chat (browser writes over Hocuspocus) never comes through here.
  */
+/**
+ * Listeners told whenever an AI chat message is appended (#2197): how the
+ * launcher supervisor learns its one-time greeting reached the chat. A seam
+ * rather than an import, because the supervisor must not reach the MCP layer;
+ * `index.ts` wires the two. The listener gets no content — only that a message
+ * landed. A throwing listener is logged and never fails the chat write.
+ */
+const claudeChatListeners = new Set<() => void>();
+
+export function onClaudeChatAppended(cb: () => void): () => void {
+  claudeChatListeners.add(cb);
+  return () => claudeChatListeners.delete(cb);
+}
+
 export function appendClaudeChatMessage(
   text: string,
   opts: {
@@ -244,6 +258,13 @@ export function appendClaudeChatMessage(
     read: true,
   };
   withMcp(ctrlDoc, () => chatMap.set(id, msg));
+  for (const cb of claudeChatListeners) {
+    try {
+      cb();
+    } catch (err) {
+      console.error("[Tandem] A chat listener failed:", err);
+    }
+  }
   return { ok: true, id };
 }
 

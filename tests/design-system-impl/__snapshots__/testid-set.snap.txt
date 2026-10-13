@@ -48,6 +48,8 @@ bulk-dismiss-btn
 chat-anchor-quote-{*}
 chat-author-{*}
 chat-composer-input
+chat-greeting-late
+chat-greeting-late-action
 chat-panel
 chat-pickup-live
 chat-pickup-status
@@ -278,6 +280,7 @@ integration-wizard-step-detect
 integration-wizard-step-done
 integration-wizard-step-error
 integration-wizard-step-verifying
+integration-wizard-tandem-claude
 integration-wizard-whats-next
 left-outline-rail
 license-activate-error

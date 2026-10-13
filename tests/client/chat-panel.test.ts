@@ -5,6 +5,7 @@ import { tick } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import { AI_CTA } from "../../src/client/hooks/useAiReadiness.svelte";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
+import { GREETING_LATE_TEXT, type GreetingAction } from "../../src/client/panels/chat-greeting";
 import type { ChatResume } from "../../src/client/panels/chat-resume";
 import type { ChatMessage } from "../../src/shared/types";
 
@@ -27,6 +28,8 @@ function renderChat(messages: ChatMessage[]) {
       aiDisabled: false,
       tandemClaudeResume: null,
       onResumeRemedy: () => {},
+      tandemClaudeGreetingLate: null,
+      onGreetingAction: () => {},
     },
   });
 }
@@ -160,6 +163,8 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
         aiDisabled: false,
         tandemClaudeResume: null,
         onResumeRemedy: () => {},
+        tandemClaudeGreetingLate: null,
+        onGreetingAction: () => {},
       },
     });
     const btn = result.container.querySelector<HTMLButtonElement>(
@@ -209,6 +214,8 @@ describe("ChatPanel — AI off by licence", () => {
         aiDisabled,
         tandemClaudeResume: null,
         onResumeRemedy: () => {},
+        tandemClaudeGreetingLate: null,
+        onGreetingAction: () => {},
         tandemClaudeControl: null,
         onStartClaude: () => {},
         onTurnOffClaude: () => {},
@@ -269,6 +276,8 @@ describe("ChatPanel — the resume row (#2196)", () => {
         onTurnOffClaude: () => {},
         tandemClaudeResume: resume,
         onResumeRemedy,
+        tandemClaudeGreetingLate: null,
+        onGreetingAction: () => {},
         aiDisabled: false,
       },
     });
@@ -323,5 +332,90 @@ describe("ChatPanel — the resume row (#2196)", () => {
     expect(btn.textContent?.trim()).toBe(AI_CTA["sign-in"].label);
     btn.click();
     expect(onResumeRemedy).toHaveBeenCalledWith("sign-in");
+  });
+});
+
+describe("ChatPanel — the 'hasn't said hello' note (#2197)", () => {
+  function renderWithGreeting(
+    greeting: GreetingAction | null,
+    opts: { resume?: ChatResume | null; messages?: ChatMessage[] } = {},
+  ) {
+    const onGreetingAction = vi.fn();
+    const result = render(ChatPanel, {
+      props: {
+        messages: opts.messages ?? [],
+        editor: null,
+        activeDocId: null,
+        openDocs: [],
+        capturedAnchor: null,
+        onCapturedAnchorChange: () => {},
+        onSend: () => true,
+        onClear: async () => {},
+        onExport: async () => {},
+        onInsert: () => false,
+        tandemClaudeControl: null,
+        onStartClaude: () => {},
+        onTurnOffClaude: () => {},
+        tandemClaudeResume: opts.resume ?? null,
+        onResumeRemedy: () => {},
+        tandemClaudeGreetingLate: greeting,
+        onGreetingAction,
+        aiDisabled: false,
+      },
+    });
+    const q = (id: string) => result.container.querySelector<HTMLElement>(`[data-testid='${id}']`);
+    return { ...result, q, onGreetingAction };
+  }
+
+  const unread = (): ChatMessage =>
+    claudeMsg({ id: "u1", author: "user", text: "hi", timestamp: Date.now() });
+
+  it("says how to fix it, replaces the pickup row, and its button restarts Tandem's Claude", () => {
+    const { q, onGreetingAction } = renderWithGreeting("relaunch", { messages: [unread()] });
+    const note = q("chat-greeting-late");
+    expect(note?.textContent).toContain("hasn't said hello");
+    expect(note?.textContent).toContain("signed in");
+    expect(note?.textContent).toContain("Tandem's tools");
+    expect(q("chat-pickup-status")).toBeNull();
+    expect(note?.closest("[aria-hidden='true']")).toBeNull();
+    expect(q("chat-pickup-live")?.textContent).toContain("hasn't said hello");
+    const btn = q("chat-greeting-late-action") as HTMLButtonElement;
+    expect(btn.textContent?.trim()).toBe("Restart Tandem's Claude");
+    btn.click();
+    expect(onGreetingAction).toHaveBeenCalledWith("relaunch");
+  });
+
+  it("a stopped launcher's own remedy labels the button (sign-in first)", () => {
+    const { q, onGreetingAction } = renderWithGreeting("sign-in");
+    const btn = q("chat-greeting-late-action") as HTMLButtonElement;
+    expect(btn.textContent?.trim()).toBe(AI_CTA["sign-in"].label);
+    btn.click();
+    expect(onGreetingAction).toHaveBeenCalledWith("sign-in");
+  });
+
+  it("the resume row outranks it", () => {
+    const { q } = renderWithGreeting("relaunch", {
+      resume: { kind: "resuming", verb: "starting" },
+    });
+    expect(q("chat-tandem-claude-resuming")).not.toBeNull();
+    expect(q("chat-greeting-late")).toBeNull();
+  });
+
+  it("control: absent when not late", () => {
+    expect(renderWithGreeting(null).q("chat-greeting-late")).toBeNull();
+  });
+});
+
+describe("the greeting note points at a troubleshooting section that exists", () => {
+  it("names the section by its heading", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const doc = fs.readFileSync(
+      path.join(import.meta.dirname, "../../docs/troubleshooting.md"),
+      "utf8",
+    );
+    const heading = "Tandem's Claude didn't say hello";
+    expect(doc).toContain(`## ${heading}`);
+    expect(GREETING_LATE_TEXT).toContain(`“${heading}”`);
   });
 });

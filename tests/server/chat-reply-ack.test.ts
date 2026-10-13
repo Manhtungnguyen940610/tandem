@@ -9,10 +9,11 @@
  * Claude's inbox the moment `BYO_MODELS_ENABLED` flips. The "append alone does not
  * stamp" case below is that caller's exact call shape.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendClaudeChatMessage,
   markUserChatRead,
+  onClaudeChatAppended,
   REPLY_TO_UNMATCHED_WARNING,
 } from "../../src/server/mcp/awareness.js";
 import { registerChannelRoutes } from "../../src/server/mcp/channel-routes.js";
@@ -50,6 +51,28 @@ describe("appendClaudeChatMessage", () => {
     expect(row(ack)?.inProgress).toBe(true);
     expect(row(plain)).not.toHaveProperty("inProgress");
     expect(row(none)).not.toHaveProperty("inProgress");
+  });
+
+  it("tells its listeners a message landed (#2197), and a throwing one never fails the write", () => {
+    const seen = vi.fn();
+    const bad = vi.fn(() => {
+      throw new Error("listener bug");
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const off1 = onClaudeChatAppended(bad);
+    const off2 = onClaudeChatAppended(seen);
+    try {
+      const id = appendedId(appendClaudeChatMessage("hello"));
+      expect(row(id)?.text).toBe("hello");
+      expect(seen).toHaveBeenCalledTimes(1);
+      off2();
+      appendClaudeChatMessage("again");
+      expect(seen).toHaveBeenCalledTimes(1);
+    } finally {
+      off1();
+      off2();
+      errSpy.mockRestore();
+    }
   });
 
   it("does not stamp the message it replies to (the collaborator's call shape)", () => {

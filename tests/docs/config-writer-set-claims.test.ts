@@ -262,6 +262,9 @@ const DURABLE_WRITER_FILES: Record<string, number> = {
   // Claude), through `atomicWriteConfigFile`. Tandem's OWN app-data root, never
   // a Claude config file, so the accepted #1599 scope is unchanged.
   "src/server/launcher/settings.ts": 1,
+  // #2197: `first-run-greeting.json` (whether the one-time greeting is owed),
+  // through `atomicWriteConfigFile`, in the same app-data root.
+  "src/server/launcher/greeting.ts": 1,
   "src/server/launcher/supervisor.ts": 1,
   "src/server/license/license-state.ts": 2,
   "src/server/mcp/annotations.ts": 1,

@@ -55,6 +55,10 @@ export type LauncherStatus =
        * promise keys on, so it is never shown for a message nothing will
        * answer. Absent from an older server. */
       startsOnMessage?: true;
+      /** Loopback-only (#2197): see the running arm's `greetingLate`. Here too,
+       * because the commonest reason the hello never comes — Claude Code not
+       * signed in — stops the child. */
+      greetingLate?: true;
       /** Loopback-only. `null` when last refresh succeeded. */
       skillRefresh?: SkillRefreshError | null;
     }
@@ -76,6 +80,12 @@ export type LauncherStatus =
        * its Claude session id (the plugin's stdio bridge); absent or false
        * means "can't confirm", not "not connected". */
       attached?: boolean;
+      /** Loopback-only (#2197). Tandem's Claude was asked for its one-time
+       * greeting and has not written to the chat: its turn ended without a
+       * message, or a minute passed (`GREETING_REPLY_WINDOW_MS`). The chat
+       * panel shows how to fix it. Decided server-side, so neither a cleared
+       * chat nor the client's clock can fake it. */
+      greetingLate?: true;
       /** Loopback-only. `null` when last refresh succeeded. */
       skillRefresh?: SkillRefreshError | null;
     };
@@ -96,7 +106,8 @@ export type LauncherStatus =
  * found no launchable `claude-code` entry (none at all, a Claude Desktop-only
  * setup, or a legacy `apply: "skip"` one), so there is nothing to restart. It
  * clears when the user completes setup: the wizard's Apply re-reads the
- * integration (`Supervisor.refreshConfigured`). That does not start Claude.
+ * integration and, when the start mode allows, starts Claude
+ * (`Supervisor.startAfterSetup`, #2197).
  */
 export type LauncherUnavailableReason =
   | "stdio-mode"
@@ -545,6 +556,64 @@ export const SUPERVISOR_INITIAL_PROMPT =
   "Tandem started you as its built-in collaborator. Call tandem_checkInbox now. " +
   `${SUPERVISOR_NO_UNASKED_WORK_CLAUSE} Tandem will wake you when the user does something. ` +
   `${SUPERVISOR_ACK_CLAUSE} ${SUPERVISOR_NO_ARM_CLAUSE}`;
+
+/**
+ * The one-time greeting turn (#2197) — the ONLY supervisor turn that asks
+ * Tandem's Claude to do something the user did not ask for (Bryan, 2026-10-12:
+ * "for that first run only, have it send a chat message in tandem greeting the
+ * user"). Sent instead of the bootstrap on a fresh spawn, and instead of the
+ * wake / sign-in re-check on a resumed one, at most once per install (see
+ * `server/launcher/greeting.ts`), and once more on the first run of v1.0.
+ *
+ * It still carries {@link SUPERVISOR_NO_UNASKED_WORK_CLAUSE}: the hello is the
+ * asked-for work, and the clause governs everything after it. The inbox comes
+ * first, so a user who has already written gets an answer, with the hello
+ * folded into it, rather than a greeting that ignores their question. It makes
+ * no "first session" claim, because the v1.0 re-arm reaches existing users.
+ */
+export const SUPERVISOR_GREETING_PROMPT =
+  "Tandem started you as its built-in collaborator, and asked you to say hello to the user once. " +
+  "First call tandem_checkInbox. If the user has written to you, answer them with tandem_reply " +
+  "(replying to their message) and say hello in that reply. Otherwise greet them with " +
+  "tandem_reply: two or three short sentences on what you can do here (answer chat, read and " +
+  "comment on documents they open, make the edits they ask for) and that you wait to be asked. " +
+  `${SUPERVISOR_NO_UNASKED_WORK_CLAUSE} Tandem will wake you when the user does something. ` +
+  `${SUPERVISOR_ACK_CLAUSE} ${SUPERVISOR_NO_ARM_CLAUSE}`;
+
+/** How long after the greeting turn is written Tandem waits for a Claude chat
+ * message before the chat panel says the hello didn't come (#2197; Bryan:
+ * "about a minute"). */
+export const GREETING_REPLY_WINDOW_MS = 60_000;
+
+/**
+ * What a wizard Apply that wrote a claude-code entry did about Tandem's Claude
+ * (#2197), for the done screen. The initial value only; the screen then reads
+ * the launcher status like everything else.
+ *   - `starting` — it was not running and the start mode is automatic, so it
+ *     is starting now.
+ *   - `running` — already running (or a start or restart was under way); left
+ *     alone.
+ *   - `held` — the start mode is not automatic, or it is stopped by choice.
+ *   - `other-ai` — another AI session is attached ("Not if another AI is on").
+ *   - `refused` — the licence refuses the AI.
+ *   - `not-configured` — the launcher found no usable claude-code entry.
+ *   - `unknown` — no answer in time, or no launcher in this process yet.
+ */
+export const TANDEM_CLAUDE_AFTER_SETUP = [
+  "starting",
+  "running",
+  "held",
+  "other-ai",
+  "refused",
+  "not-configured",
+  "unknown",
+] as const;
+export type TandemClaudeAfterSetup = (typeof TANDEM_CLAUDE_AFTER_SETUP)[number];
+
+/** Validate a wire value: the wizard trusts nothing it did not check. */
+export function isTandemClaudeAfterSetup(v: unknown): v is TandemClaudeAfterSetup {
+  return typeof v === "string" && (TANDEM_CLAUDE_AFTER_SETUP as readonly string[]).includes(v);
+}
 
 /** The turn the supervisor writes when Tandem activity should wake an idle
  * session.

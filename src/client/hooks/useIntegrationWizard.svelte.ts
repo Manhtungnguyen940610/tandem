@@ -40,6 +40,10 @@ import {
   type IntegrationsFile,
 } from "../../shared/integrations/contract.js";
 import {
+  isTandemClaudeAfterSetup,
+  type TandemClaudeAfterSetup,
+} from "../../shared/launcher/contract";
+import {
   type ClientKeychainBackend,
   createDefaultKeychainBackend,
 } from "../keychain/keychain-backend.js";
@@ -75,6 +79,9 @@ export interface IntegrationWizardState {
    *  step === "done"; consult the `status === "error"` items to surface
    *  per-row error UX in the wizard's done step. */
   readonly applyResults: ApplyItemResult[];
+  /** What the apply did about Tandem's own Claude (#2197), or null when no
+   * claude-code entry was written or the server is older. */
+  readonly tandemClaude: TandemClaudeAfterSetup | null;
   /**
    * Whether real-time push (the `tandem-channel` shim entry) actually landed on
    * disk for an applied claude-code target, determined by a post-apply re-read
@@ -216,6 +223,7 @@ export function createIntegrationWizard(
   let picked = $state<PickedIntegration[]>([]);
   let errorMessage = $state<string | null>(null);
   let applyResults = $state<ApplyItemResult[]>([]);
+  let tandemClaude = $state<TandemClaudeAfterSetup | null>(null);
   // Post-apply push-vs-polling readout (WS-B). `null` until the post-apply
   // re-read of detected entries resolves — never flash a wrong label.
   let channelRegistered = $state<boolean | null>(null);
@@ -445,6 +453,9 @@ export function createIntegrationWizard(
       }
       const applyBody = (await applyRes.json()) as ApplyResponse;
       applyResults = applyBody.results;
+      tandemClaude = isTandemClaudeAfterSetup(applyBody.tandemClaude)
+        ? applyBody.tandemClaude
+        : null;
       step = "done";
       // Re-read entries so the done step can honestly report push-vs-polling —
       // the pre-apply `existing` snapshot predates the channel-entry write.
@@ -463,6 +474,7 @@ export function createIntegrationWizard(
     picked = [];
     errorMessage = null;
     applyResults = [];
+    tandemClaude = null;
     channelRegistered = null;
     keychainUnavailable = false;
   };
@@ -499,6 +511,9 @@ export function createIntegrationWizard(
     },
     get applyResults() {
       return applyResults;
+    },
+    get tandemClaude() {
+      return tandemClaude;
     },
     get channelRegistered() {
       return channelRegistered;

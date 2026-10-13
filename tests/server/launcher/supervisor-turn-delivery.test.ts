@@ -49,6 +49,7 @@ import {
 } from "../../../src/server/launcher/supervisor.js";
 import type { AiRefusal } from "../../../src/server/license/ai-refusal.js";
 import {
+  SUPERVISOR_GREETING_PROMPT,
   SUPERVISOR_INITIAL_PROMPT,
   SUPERVISOR_WAKE_PROMPT,
 } from "../../../src/shared/launcher/contract.js";
@@ -2550,5 +2551,267 @@ describe("#2196 — the standby watch's DEFAULT subscription, against the real q
     setCtrlMode("tandem");
     _pushEventForTests(replyEvent("claude"));
     await nthChild(1);
+  });
+});
+
+// --- #2197 ----------------------------------------------------------------------
+
+describe("#2197 — startAfterSetup: a wizard Apply starts Tandem's Claude when it should", () => {
+  /** Boot with no integration (the first-run state), then write one. */
+  async function firstRunSupervisor(extra: ExtraOpts = {}, settings?: Record<string, unknown>) {
+    if (settings) writeLauncherSettingsFile(settings);
+    writeIntegrations([]);
+    const made = makeSupervisor(extra);
+    await made.sup.start();
+    expect(made.sup.status()).toMatchObject({ running: false, configured: false });
+    writeIntegrations(null);
+    return made;
+  }
+
+  it("auto, never configured: starts, fresh, and answers 'starting'", async () => {
+    const { sup } = await firstRunSupervisor();
+    expect(await sup.startAfterSetup()).toBe("starting");
+    const child = await nthChild(1);
+    await waitFor(() => sup.status().running, "running");
+    expect(texts(child)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it.each([
+    ["on-click", { startMode: "on-click", lifetime: "always", idleMinutes: 30 }],
+    ["off", { startMode: "off", lifetime: "always", idleMinutes: 30 }],
+  ])("%s: holds — an Apply is not a Start", async (_l, settings) => {
+    const { sup } = await firstRunSupervisor({}, settings);
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("a running Claude is left alone: 'running', no relaunch", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const child1 = await nthChild(1);
+    expect(await sup.startAfterSetup()).toBe("running");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+    expect(child1.killed).toBe(false);
+  });
+
+  it("idle-stopped is a choice too: held", async () => {
+    const { sup } = await stoppedByChoice("idle");
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+  });
+
+  it("no usable entry: 'not-configured'", async () => {
+    writeIntegrations([]);
+    const { sup } = makeSupervisor();
+    await sup.start();
+    expect(await sup.startAfterSetup()).toBe("not-configured");
+    expect(children).toHaveLength(0);
+  });
+
+  it("the licence refuses: 'refused', nothing spawned", async () => {
+    const { sup } = await firstRunSupervisor({ aiRefusal: () => LICENCE_REFUSAL });
+    expect(await sup.startAfterSetup()).toBe("refused");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("another AI is attached: 'other-ai', nothing spawned (#2196's rule)", async () => {
+    const { sup } = await firstRunSupervisor({ otherAiAttached: () => true });
+    expect(await sup.startAfterSetup()).toBe("other-ai");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("after shutdown's stop(): held", async () => {
+    const { sup } = await firstRunSupervisor();
+    await sup.stop();
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("answers before the spawn finishes", async () => {
+    const { sup } = await firstRunSupervisor();
+    const read = deferred<string>();
+    // Read 1 is the decision's plan; read 2 is the respawn's own plan.
+    const reads = interceptIntegrationsReads((n, pass) => (n === 2 ? read.promise : pass()));
+    try {
+      expect(await sup.startAfterSetup()).toBe("starting");
+      expect(children).toHaveLength(0);
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+    } finally {
+      reads.restore();
+    }
+    await nthChild(1);
+  });
+
+  it("a start that throws after the decision is recorded, not rejected", async () => {
+    const { sup } = await firstRunSupervisor();
+    const reads = interceptIntegrationsReads((n, pass) =>
+      n === 2 ? Promise.reject(new Error("boom")) : pass(),
+    );
+    try {
+      expect(await sup.startAfterSetup()).toBe("starting");
+      await waitFor(() => sup.status().lastError, "lastError");
+    } finally {
+      reads.restore();
+    }
+    expect(sup.status()).toMatchObject({ running: false, lastError: "spawn-failed" });
+  });
+});
+
+describe("#2197 — the one-time greeting", () => {
+  function greetingSeam(owed = true) {
+    const state = { owed, throws: false };
+    const markDone = vi.fn(async () => {
+      state.owed = false;
+    });
+    const chatCbs = new Set<() => void>();
+    const extra: ExtraOpts = {
+      greeting: {
+        isOwed: () => {
+          if (state.throws) throw new Error("unreadable");
+          return state.owed;
+        },
+        markDone,
+      },
+      subscribeClaudeChat: (cb) => {
+        chatCbs.add(cb);
+        return () => chatCbs.delete(cb);
+      },
+    };
+    const claudeWrote = () => {
+      for (const cb of chatCbs) cb();
+    };
+    return { state, markDone, extra, claudeWrote };
+  }
+
+  it("a fresh spawn that owes the greeting sends it INSTEAD of the bootstrap", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("control: not owed, the ordinary bootstrap", async () => {
+    const g = greetingSeam(false);
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("an unreadable marker reads as not owed", async () => {
+    const g = greetingSeam();
+    g.state.throws = true;
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a resumed spawn that owes it sends it in place of the wake — one turn, not two", async () => {
+    const g = greetingSeam(false);
+    const { sup, emit } = makeSupervisor({ ...g.extra, idleMinuteMs: 40 });
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "idle", idleMinutes: 1 });
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await waitFor(() => children[0].killed, "the idle stop");
+    // Owed now — the v1.0 re-arm reaches a user with a saved session — and a
+    // chat is owed too. The chat starts it (#2196).
+    g.state.owed = true;
+    emit(chatEvent());
+    const child2 = await nthChild(2);
+    await waitFor(() => texts(child2).length > 0, "the first turn");
+    await settle();
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("a Claude chat message marks it done once; the next spawn gets the ordinary bootstrap", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    g.claudeWrote();
+    g.claudeWrote();
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a marker write that fails cannot make this process greet twice", async () => {
+    const g = greetingSeam();
+    g.markDone.mockImplementation(async () => {
+      throw new Error("EPERM");
+    });
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    g.claudeWrote();
+    await settle();
+    // The file still says owed.
+    expect(g.state.owed).toBe(true);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+    expect(occurrences("Could not record that the greeting was sent")).toBe(1);
+  });
+
+  it("a greeting turn that ends with no message is late; the marker stays owed and the next spawn retries", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ running: true, greetingLate: true });
+    expect(g.markDone).not.toHaveBeenCalled();
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+    // A new greeting turn is pending again, not late.
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("still pending past the window is late; a message then clears it", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({ ...g.extra, greetingWindowMs: 40 });
+    await sup.startFresh(cwdDir);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    await sleep(60);
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    g.claudeWrote();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("a Claude Code that is not signed in: late on the STOPPED status, and still owed", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !sup.status().running, "the sign-in stop");
+    expect(sup.status()).toMatchObject({
+      running: false,
+      lastError: "needs-login",
+      greetingLate: true,
+    });
+    expect(g.markDone).not.toHaveBeenCalled();
+  });
+
+  it("a child that exits before its greeting turn ends is late", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({ ...g.extra, restartBackoffsMs: [10_000] });
+    await sup.startFresh(cwdDir);
+    exitChild(children[0], 1);
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, greetingLate: true });
   });
 });

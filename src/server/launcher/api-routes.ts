@@ -5,8 +5,8 @@
  *   - `GET /status` — read-only; loopback returns full struct (with
  *     `sessionId` redacted to "<set>"), non-loopback returns the minimal
  *     `{ available, running }` shape (mirrors `/health`'s redaction pattern).
- *     `cwd`, `resuming`, `reaperPid`, `busy`, `attached`, `standby` and
- *     `startsOnMessage` are loopback-only
+ *     `cwd`, `resuming`, `reaperPid`, `busy`, `attached`, `standby`,
+ *     `startsOnMessage` and `greetingLate` are loopback-only
  *     for the same reason as `/health`'s session-presence fields: `busy` in
  *     particular is an activity trace of the person at this machine, and the
  *     CORS allowlist admits any 127.0.0.1 port, so any local page can read
@@ -281,12 +281,13 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
       res.json(body);
       return;
     }
-    // Loopback-only, beside both stopped shapes below (#2195, #2196).
+    // Loopback-only, beside both stopped shapes below (#2195, #2196, #2197).
     const standbyFields = raw.running
       ? {}
       : {
           ...(raw.standby ? { standby: raw.standby } : {}),
           ...(raw.startsOnMessage ? { startsOnMessage: true as const } : {}),
+          ...(raw.greetingLate ? { greetingLate: true as const } : {}),
         };
     if (raw.running) {
       if (!loopback) {
@@ -313,6 +314,7 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
         resuming: raw.resuming,
         busy: raw.busy,
         attached,
+        ...(raw.greetingLate ? { greetingLate: true as const } : {}),
         skillRefresh,
       };
       res.json(body);

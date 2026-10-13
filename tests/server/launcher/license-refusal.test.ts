@@ -376,6 +376,7 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
       relaunch: async () => ({ spawned: true }),
       startFresh: async () => ({ spawned: true }),
       refreshConfigured: async () => {},
+      startAfterSetup: async () => "unknown" as const,
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),

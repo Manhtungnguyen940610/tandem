@@ -1860,6 +1860,30 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       expect(h.get().launcherStartsOnMessage).toBe(false);
     });
 
+    it("greetingLate (#2197): read from either arm, even in Solo; false without it", async () => {
+      let body: Record<string, unknown> = {
+        available: true,
+        running: true,
+        cwd: "/home/u",
+        greetingLate: true,
+      };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().greetingLate).toBe(true);
+      body = { available: true, running: false, lastError: "needs-login", greetingLate: true };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().greetingLate).toBe(true);
+      body = { available: true, running: true, cwd: "/home/u" };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().greetingLate).toBe(false);
+    });
+
     it("launcherRemedy (#2196) is chip's decision with neither of its gates", async () => {
       let body: Record<string, unknown> = { available: true, running: false, standby: "off" };
       globalThis.fetch = routedFetch({

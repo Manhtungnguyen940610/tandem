@@ -77,3 +77,31 @@ describe("App resume-row wiring (#2196)", () => {
     expect(APP).toMatch(/aiCtaHandler\(AI_CTA\[remedy\]\.action\)\(\)/);
   });
 });
+
+describe("App greeting and done-screen wiring (#2197)", () => {
+  it("the chat panel mount passes the greeting note and its handler", () => {
+    const mount = chatMount();
+    expect(mount).toMatch(/tandemClaudeGreetingLate=\{greetingAction\}/);
+    expect(mount).toMatch(/\{onGreetingAction\}/);
+  });
+
+  it("the note restarts a running Claude, else takes the stopped launcher's remedy", () => {
+    const d = APP.slice(APP.indexOf("const greetingAction = $derived"));
+    const body = d.slice(0, d.indexOf(");\n"));
+    expect(body).toMatch(/!aiReadiness\.greetingLate/);
+    expect(body).toMatch(/aiReadiness\.launcherRunning\s*\?\s*"relaunch"/);
+    expect(body).toMatch(/aiReadiness\.launcherRemedy \?\? "relaunch"/);
+    const h = APP.slice(APP.indexOf("function onGreetingAction("));
+    expect(h.slice(0, h.indexOf("\n}\n"))).toMatch(
+      /if \(action === "relaunch"\) restartClaude\(\);/,
+    );
+  });
+
+  it("the wizard gets Tandem's Claude's live state for its done screen", () => {
+    const w = APP.slice(APP.indexOf("<IntegrationWizardModal"));
+    const tag = w.slice(0, w.indexOf("/>"));
+    expect(tag).toMatch(/running: aiReadiness\.launcherRunning,/);
+    expect(tag).toMatch(/remedy: aiReadiness\.launcherRemedy,/);
+    expect(tag).toMatch(/standby: aiReadiness\.launcherStandby,/);
+  });
+});

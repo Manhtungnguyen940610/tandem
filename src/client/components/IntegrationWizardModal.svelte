@@ -28,6 +28,7 @@
 import { untrack } from "svelte";
 import { BYO_MODELS_ENABLED, COWORK_ENABLED } from "../../shared/constants.js";
 import type { ApplyItemResult, ExistingMcpInstall } from "../../shared/integrations/contract.js";
+import type { LauncherStandby } from "../../shared/launcher/contract.js";
 import {
   COWORK_PREFLIGHT_CHECKING,
   COWORK_PREFLIGHT_FAILED,
@@ -37,6 +38,7 @@ import {
   undetectedDetail,
 } from "../cowork/cowork-helpers.js";
 import { coworkToggleIntegration, type InvokeFn, loadInvoke } from "../cowork/cowork-invoke.js";
+import type { AiRemedy } from "../hooks/useAiReadiness.svelte";
 import {
   autostartWizardDefault,
   createAutostart,
@@ -63,6 +65,7 @@ import {
   computeDoneHeaderState,
   type PushSupportNote,
   pushSupportNote,
+  tandemClaudeDoneCopy,
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
 import PushRoutesInfo from "./PushRoutesInfo.svelte";
@@ -77,9 +80,20 @@ interface Props {
    * (and undefined-safe via `?.`) while dark.
    */
   onSetupModels?: () => void;
+  /**
+   * Tandem's own Claude as the launcher status shows it now (#2197): refines
+   * the apply's `tandemClaude` answer on the done screen, so a start that has
+   * since failed or come up is reported as it is. App passes readiness; a mount
+   * without it shows the apply's answer alone.
+   */
+  tandemClaudeLive?: {
+    running: boolean;
+    remedy: AiRemedy | null;
+    standby: LauncherStandby | null;
+  } | null;
 }
 
-let { open, onClose, onSetupModels }: Props = $props();
+let { open, onClose, onSetupModels, tandemClaudeLive = null }: Props = $props();
 
 // Absolute base URL because the Vite dev server does not proxy /api/* —
 // other client modules (yjsSync, useNotifications, fileUpload) follow the
@@ -566,6 +580,8 @@ const anyApplyErrors = $derived(wizard.applyResults.some((r) => r.status === "er
 const doneHeaderState = $derived(
   computeDoneHeaderState(anyApplyErrors, reachability.claudeConnected),
 );
+// The line about Tandem's own background Claude (#2197).
+const tandemClaudeLine = $derived(tandemClaudeDoneCopy(wizard.tandemClaude, tandemClaudeLive));
 
 /** Per-row delivery truth, joined the same way `resultLabel` joins the label.
  *  Static (a fact of the target kind), so unlike `reachabilityLine` it needs no
@@ -1131,6 +1147,11 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 {/if}
               </span>
             </div>
+            {#if tandemClaudeLine}
+              <p class="iw-hint-text" data-testid="integration-wizard-tandem-claude">
+                {tandemClaudeLine}
+              </p>
+            {/if}
             {#if isTauriRuntime() && wizardAutostartStatus !== null && !wizardAutostartBlocked}
               <label class="iw-autostart" data-testid="integration-wizard-autostart">
                 <input
