@@ -8,6 +8,9 @@ activity-empty
 activity-pill
 activity-row-{*}
 activity-tray
+ai-off-notice
+ai-off-notice-collapse
+ai-off-notice-settings-link
 ai-readiness-harness
 annotation-author-dot-{*}
 annotation-card-{*}
@@ -51,6 +54,7 @@ chat-pickup-status
 chat-send-btn
 chat-tab
 chat-tandem-claude-toggle
+claude-code-ai-off-hint
 claude-typing-indicator-{*}
 claude-working-indicator
 clear-chat-btn
@@ -151,6 +155,7 @@ editor-spellcheck-toggle
 editor-stage
 empty-state-connect-ai
 empty-state-open-file
+empty-state-open-license-settings
 empty-state-open-settings
 empty-state-restart-claude
 empty-state-retry
@@ -288,10 +293,6 @@ license-trial-buy
 license-trial-days
 license-unverifiable-warning
 license-update-window-ended
-license-wall
-license-wall-buy
-license-wall-dismiss
-license-wall-unverifiable
 license-window-support-link
 margin-anchor-dot
 margin-bubble-{*}

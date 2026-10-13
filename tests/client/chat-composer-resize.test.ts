@@ -33,6 +33,7 @@ function renderChat() {
       tandemClaudeControl: null,
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
+      aiDisabled: false,
     },
   });
 }

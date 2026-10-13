@@ -41,6 +41,7 @@ function renderChat(messages: ChatMessage[], visible: boolean | "omit" = true) {
       tandemClaudeControl: null,
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
+      aiDisabled: false,
     },
   });
 }
