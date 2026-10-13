@@ -443,6 +443,7 @@ settings-modal-tandem-claude-load-error
 settings-modal-tandem-claude-readonly
 settings-modal-tandem-claude-save-error
 settings-modal-tandem-claude-start-{*}
+settings-modal-tandem-claude-unreadable
 settings-modal-view-changelog-btn
 settings-modal-view-documentation-btn
 settings-modal-view-license-btn

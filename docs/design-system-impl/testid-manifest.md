@@ -215,7 +215,7 @@ more lines in `__snapshots__/testid-set.snap.txt`.
 - `settings-modal-sidebar-{version,footer}`,
   `settings-modal-mcp-status`, `settings-modal-tab-{*}`,
   `settings-modal-display-name`, `settings-modal-shortcuts-list`,
-  `settings-modal-tandem-claude{,-disclosure,-load-error,-readonly,-absent,-save-error,-idle-minutes,-idle-error}`,
+  `settings-modal-tandem-claude{,-disclosure,-load-error,-readonly,-unreadable,-absent,-save-error,-idle-minutes,-idle-error}`,
   `settings-modal-tandem-claude-start-{*}`, `settings-modal-tandem-claude-lifetime-{*}` (#2195),
   `settings-modal-app-info-footer`
 - `settings-modal-solo-rail-hidden-toggle`,
