@@ -111,6 +111,17 @@ describe("launcher-start / startTandemClaude", () => {
     expect(postTo(START_URL)).toMatchObject({ userInitiated: true });
   });
 
+  it("is refused while the licence refuses the AI (#1521) — no POST, and the notice says 'started'", async () => {
+    executor?.dispose();
+    executor = mountActionExecutor(
+      makeActionDeps({ notify, afterLauncherAction, aiNotice: () => "unlicensed" }),
+    );
+    startTandemClaude();
+    await until(() => notify.mock.calls.length > 0);
+    expect(notify.mock.calls[0][1]).toContain("can't be started");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it("does not POST when the launcher is not set up", async () => {
     status = { available: false, reason: "not-configured" };
     startTandemClaude();

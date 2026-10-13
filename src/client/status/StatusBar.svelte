@@ -5,16 +5,16 @@ import type { LauncherStandby } from "../../shared/launcher/contract";
 import { createAgentLabel } from "../hooks/useAgentLabel.svelte";
 import type {
   AiChip,
-  AiCtaAction,
   AiLiveIndicator,
   AiReadinessState,
   LauncherFailure,
   PushDelivery,
 } from "../hooks/useAiReadiness.svelte";
-import { AI_CTA, TANDEM_CLAUDE_DOWN } from "../hooks/useAiReadiness.svelte";
+import { AI_CTA, ctaHandler, TANDEM_CLAUDE_DOWN } from "../hooks/useAiReadiness.svelte";
 import type { ConnectionStatus } from "../hooks/yjsSync.svelte";
 import { createCoalescingTick } from "../utils/coalescing-tick";
 import { debounce } from "../utils/debounce";
+import type { AiNotice } from "../utils/license-ui";
 import CwdDriftPill from "./CwdDriftPill.svelte";
 import {
   type AiIndicatorTone,
@@ -85,6 +85,18 @@ interface Props {
   /** The Start control (#2195). Required: an optional one would make a
    *  forgotten mount a dead Start button rather than a type error. */
   onStartClaude: () => void;
+  /**
+   * Open Settings → License — the `ai-off` chip's action (#1521). Required,
+   * like `aiLauncherAttached`: a default would let a mount that forgets it
+   * render a CTA that does nothing.
+   */
+  onOpenLicenseSettings: () => void;
+  /**
+   * The licence refusal (#1521): pass `aiReadiness.aiNotice`, never
+   * `licenseStore.ui.aiNotice` — readiness guarantees it is non-null exactly
+   * when `aiChip` is `"ai-off"`. Drives the pill's ai-off state and copy.
+   */
+  aiNotice: AiNotice | null;
   /** Solo mode — suppresses the "AI not connected" nag when no AI is connected. */
   soloMode: boolean;
   /** Whether anything is delivering real-time events. Only `"none"` changes the
@@ -161,6 +173,8 @@ let {
   onConnectAi,
   onRestartClaude,
   onStartClaude,
+  onOpenLicenseSettings,
+  aiNotice,
   soloMode,
   pushDelivery = "unknown",
   claudeWorkingTool = null,
@@ -306,27 +320,29 @@ const aiView = $derived(
     launcherStandbyRecent: aiLauncherStandbyRecent,
     docSyncConnected: connected,
     sessionCount: aiSessionCount,
+    aiNotice,
   }),
 );
+
+// The handlers every CTA may name, for `ctaHandler`. Built inside each
+// `$derived` below (never a top-level object) so the closures read live props.
+function ctaHandlers() {
+  return {
+    connect: () => onConnectAi?.(),
+    restart: () => onRestartClaude?.(),
+    start: () => onStartClaude(),
+    openLicenseSettings: () => onOpenLicenseSettings(),
+  };
+}
 
 // The "Tandem's Claude isn't running" sibling: copy from `TANDEM_CLAUDE_DOWN`,
 // handler choice from `AI_CTA[failure].action` — one lookup each, never a
 // parallel ternary (#1268).
-//
-// `ctaHandlers` is the one action → handler lookup for both buttons. Built in
-// a `$derived` so it reads the props when they change rather than freezing the
-// closures they had at mount, and keyed on `AiCtaAction` so a new action is a
-// type error here instead of falling down a binary ternary (#1268, #2195).
-const ctaHandlers = $derived<Record<AiCtaAction, (() => void) | undefined>>({
-  connect: onConnectAi,
-  restart: onRestartClaude,
-  start: onStartClaude,
-});
 const launcherDown = $derived(
   aiLauncherFailure && !aiLauncherFailureDismissed
     ? {
         ...TANDEM_CLAUDE_DOWN[aiLauncherFailure],
-        onclick: ctaHandlers[AI_CTA[aiLauncherFailure].action],
+        onclick: ctaHandler(AI_CTA[aiLauncherFailure].action, ctaHandlers()),
       }
     : null,
 );
@@ -355,13 +371,24 @@ const launcherDown = $derived(
 // its accessible name leads with that label and then names the action: WCAG
 // 2.5.3 wants the visible text inside the name, and without it the three
 // standbys would collapse to one screen-reader string.
+//
+// The `ai-off` chip takes its title/aria from the ai-off view, which holds
+// the kind-specific copy (#1521). `AI_CTA["ai-off"]` is the type-level fallback
+// only, which is why it must stay kind-neutral (see its comment).
 const aiCta = $derived.by(() => {
   if (!aiChip) return null;
+  if (aiChip === "ai-off" && aiView?.dataState === "ai-off") {
+    return {
+      title: aiView.title,
+      ariaLabel: aiView.ariaLabel,
+      onclick: ctaHandler(AI_CTA[aiChip].action, ctaHandlers()),
+    };
+  }
   const lead = aiChip === "start" && aiView ? `${aiView.label}. ` : "";
   return {
     title: lead + AI_CTA[aiChip].title,
     ariaLabel: lead + AI_CTA[aiChip].ariaLabel,
-    onclick: ctaHandlers[AI_CTA[aiChip].action],
+    onclick: ctaHandler(AI_CTA[aiChip].action, ctaHandlers()),
   };
 });
 

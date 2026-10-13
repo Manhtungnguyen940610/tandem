@@ -7,7 +7,7 @@
  *      required props. The Start / Turn off control would then never render,
  *      and nothing would say so.
  *   2. The no-agent send toast is built inside App, which no test mounts. Its
- *      action must go through the `AiCtaAction` record: a binary
+ *      action must go through `ctaHandler` (App's `aiCtaHandler`): a binary
  *      `action === "restart" ? … : …` sends the `start` CTA to the integration
  *      wizard (#1268's bug class).
  */
@@ -33,13 +33,19 @@ describe("App launcher wiring (#2195)", () => {
     expect(mount).toMatch(/onTurnOffClaude=\{turnOffClaude\}/);
   });
 
-  it("the no-agent toast routes through the AiCtaAction record, never a binary ternary", () => {
-    expect(APP).toMatch(/onClick: AI_CTA_HANDLERS\[AI_CTA\[notice\.chip\]\.action\]/);
+  it("the no-agent toast routes through ctaHandler, never a binary ternary", () => {
+    expect(APP).toMatch(/onClick: aiCtaHandler\(AI_CTA\[cta\]\.action\)/);
     expect(APP).not.toMatch(/\.action === "restart" \?/);
   });
 
-  it("the record maps start to the Start control", () => {
-    expect(APP).toMatch(/start: startClaude,/);
+  it("the chat panel's Start is hidden while the licence refuses the AI (#1521)", () => {
+    const ctl = APP.slice(APP.indexOf("const tandemClaudeControl = $derived"));
+    expect(ctl.slice(0, ctl.indexOf(");\n"))).toMatch(/aiReadiness\.aiNotice === null &&/);
+  });
+
+  it("App's ctaHandler wiring maps start to the Start control", () => {
+    const fn = APP.slice(APP.indexOf("function aiCtaHandler("));
+    expect(fn.slice(0, fn.indexOf("\n}\n"))).toMatch(/start: startClaude,/);
   });
 });
 
@@ -62,7 +68,7 @@ describe("App resume-row wiring (#2196)", () => {
     expect(APP).toMatch(/startingForMessage: viaKey === "chat" && chatResumeState\.pending,/);
   });
 
-  it("the remedy routes through the AiCtaAction record", () => {
-    expect(APP).toMatch(/AI_CTA_HANDLERS\[AI_CTA\[remedy\]\.action\]\(\)/);
+  it("the remedy routes through ctaHandler", () => {
+    expect(APP).toMatch(/aiCtaHandler\(AI_CTA\[remedy\]\.action\)\(\)/);
   });
 });

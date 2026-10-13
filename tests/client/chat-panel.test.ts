@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 
-import { cleanup, render } from "@testing-library/svelte";
+import { cleanup, fireEvent, render } from "@testing-library/svelte";
+import { tick } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 import { AI_CTA } from "../../src/client/hooks/useAiReadiness.svelte";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
@@ -23,6 +24,7 @@ function renderChat(messages: ChatMessage[]) {
       tandemClaudeControl: null,
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
+      aiDisabled: false,
       tandemClaudeResume: null,
       onResumeRemedy: () => {},
     },
@@ -155,6 +157,7 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
         tandemClaudeControl: control,
         onStartClaude,
         onTurnOffClaude,
+        aiDisabled: false,
         tandemClaudeResume: null,
         onResumeRemedy: () => {},
       },
@@ -188,6 +191,64 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
   });
 });
 
+describe("ChatPanel — AI off by licence", () => {
+  function mount(aiDisabled: boolean) {
+    const onSend = vi.fn(() => true);
+    const r = render(ChatPanel, {
+      props: {
+        messages: [claudeMsg()],
+        editor: null,
+        activeDocId: null,
+        openDocs: [],
+        capturedAnchor: null,
+        onCapturedAnchorChange: () => {},
+        onSend,
+        onClear: async () => {},
+        onExport: async () => {},
+        onInsert: () => false,
+        aiDisabled,
+        tandemClaudeResume: null,
+        onResumeRemedy: () => {},
+        tandemClaudeControl: null,
+        onStartClaude: () => {},
+        onTurnOffClaude: () => {},
+      },
+    });
+    const input = r.container.querySelector<HTMLTextAreaElement>(
+      "[data-testid='chat-composer-input']",
+    ) as HTMLTextAreaElement;
+    const send = r.container.querySelector<HTMLButtonElement>(
+      "[data-testid='chat-send-btn']",
+    ) as HTMLButtonElement;
+    return { ...r, onSend, input, send };
+  }
+
+  it("disables the composer and send, and Enter does not send", async () => {
+    const { input, send, onSend, container, unmount } = mount(true);
+    expect(input.disabled).toBe(true);
+    expect(input.placeholder).toBe("AI features are off");
+    await fireEvent.input(input, { target: { value: "hello" } });
+    await tick();
+    expect(send.disabled).toBe(true);
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).not.toHaveBeenCalled();
+    // The user's own history is still there.
+    expect(container.textContent).toContain("hello");
+    unmount();
+  });
+
+  it("the twin: enabled, Enter sends", async () => {
+    const { input, send, onSend, unmount } = mount(false);
+    expect(input.disabled).toBe(false);
+    await fireEvent.input(input, { target: { value: "hi there" } });
+    await tick();
+    expect(send.disabled).toBe(false);
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledWith("hi there");
+    unmount();
+  });
+});
+
 describe("ChatPanel — the resume row (#2196)", () => {
   function renderWithResume(resume: ChatResume | null, messages: ChatMessage[] = []) {
     const onResumeRemedy = vi.fn();
@@ -208,6 +269,7 @@ describe("ChatPanel — the resume row (#2196)", () => {
         onTurnOffClaude: () => {},
         tandemClaudeResume: resume,
         onResumeRemedy,
+        aiDisabled: false,
       },
     });
     const q = (id: string) => result.container.querySelector<HTMLElement>(`[data-testid='${id}']`);

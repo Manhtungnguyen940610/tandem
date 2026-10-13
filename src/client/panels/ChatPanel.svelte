@@ -9,6 +9,7 @@ import { createAgentLabel } from "../hooks/useAgentLabel.svelte";
 import { AI_CTA } from "../hooks/useAiReadiness.svelte";
 import { flatOffsetToPmPos } from "../positions";
 import { agentColor } from "../utils/agent-color";
+import { AI_OFF_TITLE } from "../utils/license-ui";
 import { localChatDateLabel } from "./chat-export";
 import { renderMarkdown } from "./chat-markdown";
 import { chatPickup, chatPickupAnnouncement, chatPickupLabel } from "./chat-pickup";
@@ -63,6 +64,12 @@ interface Props {
   tandemClaudeResume: ChatResume | null;
   /** Runs the failed row's remedy (`AI_CTA[remedy].action`). */
   onResumeRemedy: (remedy: Extract<ChatResume, { kind: "failed" }>["remedy"]) => void;
+  /**
+   * The licence refuses the AI (#1521). Disables the composer and send; the
+   * history stays fully readable. Required, with no default, so a mount that
+   * forgets it fails to compile rather than fail open.
+   */
+  aiDisabled: boolean;
 }
 
 let {
@@ -86,6 +93,7 @@ let {
   onTurnOffClaude,
   tandemClaudeResume,
   onResumeRemedy,
+  aiDisabled,
 }: Props = $props();
 
 // One lookup for the control's copy, keyed like the prop. A double click needs
@@ -236,6 +244,7 @@ $effect(() => {
 });
 
 function sendMessage() {
+  if (aiDisabled) return;
   if (!inputText.trim()) return;
   if (onSend(inputText.trim()) === false) return;
   inputText = "";
@@ -567,7 +576,8 @@ async function exportChat() {
       value={inputText}
       oninput={(e) => (inputText = (e.target as HTMLTextAreaElement).value)}
       onkeydown={handleKeyDown}
-      placeholder="Message your AI…"
+      disabled={aiDisabled}
+      placeholder={aiDisabled ? AI_OFF_TITLE : "Message your AI…"}
       rows={1}
       class="chat-textarea"
       data-multiline={composerMultiline}
@@ -575,7 +585,7 @@ async function exportChat() {
     ></textarea>
     <button
       onclick={sendMessage}
-      disabled={!inputText.trim()}
+      disabled={!inputText.trim() || aiDisabled}
       class="chat-send-btn"
       aria-label="Send message"
       title="Send · Enter"
