@@ -23,6 +23,7 @@ function view(over: Partial<ViewInput> = {}) {
     launcherRestarting: false,
     launcherStarting: false,
     launcherStandby: null,
+    launcherStandbyRecent: false,
     docSyncConnected: true,
     sessionCount: null,
     ...over,
@@ -504,6 +505,29 @@ describe("aiIndicatorView — standby (#2195)", () => {
       liveIndicator: "connected",
       sessionCount: 1,
       launcherStandby: "off",
+      launcherStandbyRecent: true,
+    });
+    expect(v?.dataState).toBe("standby");
+  });
+
+  it("after the leftover window, a live session is someone else's and shows as connected", () => {
+    const v = view({
+      state: "ready",
+      liveIndicator: "connected",
+      sessionCount: 1,
+      launcherStandby: "off",
+      launcherStandbyRecent: false,
+    });
+    expect(v?.dataState).toBe("connected");
+  });
+
+  it("a leftover entry that no longer counts live never shows as connected", () => {
+    const v = view({
+      state: "stopped",
+      liveIndicator: "connected",
+      sessionCount: 0,
+      launcherStandby: "idle",
+      launcherStandbyRecent: false,
     });
     expect(v?.dataState).toBe("standby");
   });

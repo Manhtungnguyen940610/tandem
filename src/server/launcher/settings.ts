@@ -153,19 +153,23 @@ function withSettingsLock<T>(fn: () => Promise<T>): Promise<T> {
  * settings as stored. Throws `SettingsNewerError` for a file from a newer
  * Tandem, and whatever the write throws.
  *
- * A fallback read is merged too: the user is setting a value now, and what they
- * set must win over a file we could not read. The fields they did not touch get
- * the fallback's values — `on-click` for an unreadable start mode, which is the
- * value Tandem was already behaving by.
+ * An unreadable file is merged too — the user is setting a value now, and that
+ * write is also how a damaged file gets repaired — but the fields they did not
+ * touch come from `whenUnreadable` (the supervisor's last good read) when there
+ * is one. Without it they come from the fallback, `on-click`, which is what
+ * Tandem was already behaving by.
  */
 export function updateLauncherSettings(
   base: string,
   patch: LauncherSettingsPatch,
+  whenUnreadable?: LauncherSettings | null,
 ): Promise<LauncherSettings> {
   return withSettingsLock(async () => {
     const current = await readLauncherSettings(base);
     if (current.source === "file" && current.newer) throw new SettingsNewerError();
-    const next: LauncherSettings = { ...current.settings, ...patch };
+    const underneath =
+      current.source === "fallback" && whenUnreadable ? whenUnreadable : current.settings;
+    const next: LauncherSettings = { ...underneath, ...patch };
     await writeLauncherSettings(base, next);
     return next;
   });

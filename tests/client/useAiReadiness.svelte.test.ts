@@ -1763,6 +1763,25 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       expect(h.get().launcherStarting).toBe(false);
     });
 
+    it("a standby is 'recent' for its first minute only", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        globalThis.fetch = routedFetch({
+          launcher: standby("off"),
+          health: mkResponse({ status: "ok", hasSession: false }),
+        });
+        const h = mount();
+        await settle();
+        expect(h.get().launcherStandbyRecent).toBe(true);
+        vi.setSystemTime(Date.now() + 61_000);
+        h.get().refreshLauncherStatus();
+        await settle();
+        expect(h.get().launcherStandbyRecent).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("control: a restart with no standby before it is a restart", async () => {
       globalThis.fetch = routedFetch({
         launcher: () => mkResponse({ available: true, running: false, restartPending: true }),

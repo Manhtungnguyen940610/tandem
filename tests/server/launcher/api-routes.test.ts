@@ -1494,12 +1494,33 @@ describe("GET /api/launcher/settings (#2195)", () => {
     expect(res.status).toBe(403);
   });
 
-  it("refuses a foreign origin", async () => {
+  it("answers a same-origin read, which a browser sends with no Origin header", async () => {
     const { app } = makeApp(baseDeps(null));
-    const res = await request(app, "GET", "/api/launcher/settings", undefined, {
-      Origin: "https://evil.example",
+    // `request` always sets Origin; a raw fetch here leaves it off, as the npm
+    // build's own editor does.
+    const res = await new Promise<{ status: number }>((resolve, reject) => {
+      const server = app.listen(0, "127.0.0.1", async () => {
+        const address = server.address();
+        if (typeof address !== "object" || address === null) return reject(new Error("no address"));
+        try {
+          const r = await fetch(`http://127.0.0.1:${address.port}/api/launcher/settings`);
+          resolve({ status: r.status });
+        } catch (err) {
+          reject(err);
+        } finally {
+          server.close();
+        }
+      });
     });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+  });
+
+  it("marks an unreadable file, so Settings does not present the fallback as a saved choice", async () => {
+    const deps = baseDeps(null);
+    fs.writeFileSync(path.join(deps.settingsBase, "launcher-settings.json"), "{ truncated");
+    const { app } = makeApp(deps);
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.body).toMatchObject({ unreadable: true, settings: { startMode: "on-click" } });
   });
 });
 
@@ -1727,5 +1748,42 @@ describe("POST /api/launcher/start — the Start control (userInitiated, #2195)"
     expect(relaunch.status).toBe(429);
     release();
     expect((await pending).status).toBe(200);
+  });
+});
+
+describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () => {
+  async function nonceWith(app: Express, headers: Record<string, string>): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const server = app.listen(0, "127.0.0.1", async () => {
+        const address = server.address();
+        if (typeof address !== "object" || address === null) return reject(new Error("no address"));
+        try {
+          const r = await fetch(`http://127.0.0.1:${address.port}/api/launcher/nonce`, { headers });
+          resolve(r.status);
+        } catch (err) {
+          reject(err);
+        } finally {
+          server.close();
+        }
+      });
+    });
+  }
+
+  it("issues one for a same-origin GET, which carries no Origin (the npm build's editor)", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    expect(await nonceWith(app, { "Sec-Fetch-Site": "same-origin" })).toBe(200);
+  });
+
+  it("still refuses a cross-site request with no Origin (an <img> probe cannot rotate it)", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    expect(await nonceWith(app, { "Sec-Fetch-Site": "cross-site" })).toBe(403);
+    expect(await nonceWith(app, {})).toBe(403);
+  });
+
+  it("still refuses a foreign Origin, whatever Sec-Fetch-Site says", async () => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    expect(
+      await nonceWith(app, { Origin: "https://evil.example", "Sec-Fetch-Site": "same-origin" }),
+    ).toBe(403);
   });
 });

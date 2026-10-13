@@ -198,13 +198,14 @@ const STARTING: BaseView = {
  * never "AI not connected": nothing is broken, and the pill is the Start
  * button (`AI_CTA.start`) whenever the chip is `start`.
  *
- * Shown at tier 2, beside RESTARTING, for the same reason RESTARTING sits
- * there: the child's own MCP entry still reads live for up to a minute after it
- * exits (`LIVE_RECENT_MS`), and below tier 2 that leftover would show a green
- * "AI attached" right after the user turned Claude off. The cost is the same as
- * RESTARTING's — a separate session started by hand reads as Tandem's Claude
- * being off for as long as the standby lasts; it is still counted in the
- * session suffix.
+ * Shown at tier 2, beside RESTARTING, for the first minute of a standby: the
+ * child's own MCP entry still reads live for up to a minute after it exits
+ * (`LIVE_RECENT_MS`), and below tier 2 that leftover would show a green "AI
+ * attached" right after the user turned Claude off. After that minute a live
+ * session is someone else's, and Rule 3 shows it as connected.
+ *
+ * The titles name the chat panel: when the pill is the Start button its hover
+ * text comes from `AI_CTA.start` instead, so these show only when it is not.
  */
 const STANDBY_BASE = {
   tone: "not-connected",
@@ -217,13 +218,13 @@ const STANDBY: Record<LauncherStandby, BaseView> = {
   off: {
     ...STANDBY_BASE,
     label: "Tandem's Claude is off",
-    title: "Tandem's Claude is turned off. Start it from here or from the chat panel.",
+    title: "Tandem's Claude is turned off. Start it from the chat panel.",
     ariaLabel: "Tandem's Claude is turned off.",
   },
   "awaiting-start": {
     ...STANDBY_BASE,
     label: "Tandem's Claude hasn't started",
-    title: "Tandem's Claude is set to start when you click Start.",
+    title: "Tandem's Claude is set to start when you click Start in the chat panel.",
     ariaLabel: "Tandem's Claude hasn't started. It starts when you click Start.",
   },
   idle: {
@@ -414,6 +415,9 @@ export interface AiIndicatorInput {
   launcherStarting: boolean;
   /** Tandem's Claude is not running by choice (`AiReadiness.launcherStandby`). */
   launcherStandby: LauncherStandby | null;
+  /** That standby began within the leftover-session window
+   *  (`AiReadiness.launcherStandbyRecent`). */
+  launcherStandbyRecent: boolean;
   docSyncConnected: boolean;
   /** `/health`'s session count, or `null` when unknown. */
   sessionCount: number | null;
@@ -442,7 +446,15 @@ function baseIndicatorView(input: AiIndicatorInput): BaseView | null {
     });
   }
   if (input.launcherRestarting) return input.launcherStarting ? STARTING : RESTARTING;
-  if (input.launcherStandby !== null) return STANDBY[input.launcherStandby];
+  // A standby outranks a live session only while that session can still be the
+  // stopped child's own leftover entry; after that it is someone else's, and
+  // Rule 3 shows it as connected.
+  if (
+    input.launcherStandby !== null &&
+    (input.liveIndicator !== "connected" || input.sessionCount === 0 || input.launcherStandbyRecent)
+  ) {
+    return STANDBY[input.launcherStandby];
+  }
 
   // Rule 3: anything else attached.
   if (input.liveIndicator === "connected") {

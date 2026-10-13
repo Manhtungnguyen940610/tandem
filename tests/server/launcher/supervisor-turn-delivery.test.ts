@@ -1999,3 +1999,69 @@ describe("#2195 — stopping while idle", () => {
     await waitFor(() => child1.killed, "the idle stop after switching to idle");
   });
 });
+
+describe("#2195 — review fixes", () => {
+  it("Off still stops Claude when the mode cannot be saved (a file from a newer Tandem)", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const child1 = await nthChild(1);
+    fs.writeFileSync(
+      path.join(baseDir, "launcher-settings.json"),
+      JSON.stringify({ version: 2, startMode: "auto" }),
+    );
+    await expect(sup.updateSettings({ startMode: "off" })).rejects.toThrow(/newer Tandem/);
+    expect(child1.killed).toBe(true);
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+  });
+
+  it("a lifetime change while the file is unreadable keeps the real start mode, not the fallback's on-click", async () => {
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "always", idleMinutes: 30 });
+    const { sup } = makeSupervisor();
+    await sup.start();
+    await nthChild(1);
+    fs.writeFileSync(path.join(baseDir, "launcher-settings.json"), "{ truncated");
+    await sup.updateSettings({ lifetime: "idle" });
+    expect(readLauncherSettingsFile()).toMatchObject({ startMode: "auto", lifetime: "idle" });
+  });
+
+  it("the boot settings read counts as starting, never as a plain stopped launcher", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { sup } = makeSupervisor({
+      readSettings: async () => {
+        await held;
+        return {
+          source: "default",
+          settings: { startMode: "on-click", lifetime: "always", idleMinutes: 30 },
+        };
+      },
+    });
+    const booting = sup.start();
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, restartPending: true });
+    release();
+    await booting;
+    expect(sup.status()).toEqual({ running: false, standby: "awaiting-start" });
+  });
+
+  it("a lifetime change that lands while a crash restart reads its plan reaches the restarted child", async () => {
+    const { sup } = makeSupervisor({ idleMinuteMs: 40 });
+    await sup.start();
+    const read = deferred<string>();
+    const reads = interceptIntegrationsReads((n, pass) => (n === 1 ? read.promise : pass()));
+    let child2: FakeChild;
+    try {
+      exitChild(await nthChild(1), 1);
+      await waitFor(() => reads.count() === 1, "the restart's integrations read");
+      // No child is alive, so nothing can take the new idle limit but the spawn.
+      await sup.updateSettings({ lifetime: "idle", idleMinutes: 1 });
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+      child2 = await nthChild(2);
+    } finally {
+      reads.restore();
+    }
+    await waitFor(() => child2.killed, "the restarted child's idle stop");
+  });
+});

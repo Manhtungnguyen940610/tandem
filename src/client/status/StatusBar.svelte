@@ -61,6 +61,8 @@ interface Props {
    *  Required for the same reason as `aiLauncherAttached`: forgotten wiring
    *  would land on "AI not connected", whose hover text says to run /mcp. */
   aiLauncherStandby: LauncherStandby | null;
+  /** The standby began within the leftover-session window. */
+  aiLauncherStandbyRecent: boolean;
   /** `/health`'s session count, or null when unknown. */
   aiSessionCount: number | null;
   /** It tripped while another live session is attached → the sibling button.
@@ -150,6 +152,7 @@ let {
   aiLauncherRestarting,
   aiLauncherStarting,
   aiLauncherStandby,
+  aiLauncherStandbyRecent,
   aiSessionCount,
   aiLauncherFailure = null,
   aiLauncherFailureDismissed = false,
@@ -300,6 +303,7 @@ const aiView = $derived(
     launcherRestarting: aiLauncherRestarting,
     launcherStarting: aiLauncherStarting,
     launcherStandby: aiLauncherStandby,
+    launcherStandbyRecent: aiLauncherStandbyRecent,
     docSyncConnected: connected,
     sessionCount: aiSessionCount,
   }),

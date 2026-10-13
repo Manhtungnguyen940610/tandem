@@ -2763,6 +2763,7 @@ const shouldShowModelPicker = $derived(
       aiLauncherRestarting={aiReadiness.launcherRestarting}
       aiLauncherStarting={aiReadiness.launcherStarting}
       aiLauncherStandby={aiReadiness.launcherStandby}
+      aiLauncherStandbyRecent={aiReadiness.launcherStandbyRecent}
       aiSessionCount={aiReadiness.sessionCount}
       aiLauncherFailure={aiReadiness.launcherFailure}
       aiLauncherFailureDismissed={launcherFailureShown === null}

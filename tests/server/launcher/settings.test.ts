@@ -153,6 +153,22 @@ describe("updateLauncherSettings", () => {
     });
   });
 
+  it("an unreadable file merges onto the caller's last good settings, not the fallback", async () => {
+    write("{ truncated");
+    expect(
+      await updateLauncherSettings(
+        base,
+        { idleMinutes: 5 },
+        { startMode: "off", lifetime: "idle", idleMinutes: 10 },
+      ),
+    ).toEqual({ startMode: "off", lifetime: "idle", idleMinutes: 5 });
+  });
+
+  it("with nothing better to merge onto, an unreadable file merges onto the on-click fallback", async () => {
+    write("{ truncated");
+    expect((await updateLauncherSettings(base, { idleMinutes: 5 })).startMode).toBe("on-click");
+  });
+
   it("refuses to overwrite a file a newer Tandem wrote", async () => {
     const raw = JSON.stringify({ version: 2, startMode: "off", somethingNew: true });
     write(raw);

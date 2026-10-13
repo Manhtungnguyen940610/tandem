@@ -512,6 +512,14 @@ export interface AiReadiness {
    * failure.
    */
   readonly launcherStandby: LauncherStandby | null;
+  /**
+   * The standby began within the last minute — the window in which the
+   * stopped child's own MCP entry can still read as a live session
+   * (`LIVE_RECENT_MS` server-side). The pill lets the standby outrank a live
+   * session only then; after it, a live session is someone else's and shows
+   * as connected.
+   */
+  readonly launcherStandbyRecent: boolean;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
    *  `countDistinctClients`), or `null` when unknown or unreachable. */
   readonly sessionCount: number | null;
@@ -569,6 +577,9 @@ export interface AiReadiness {
 }
 
 const POLL_MS = 8_000;
+/** Mirrors the server's `LIVE_RECENT_MS` (transport-registry.ts): how long a
+ * stopped client's MCP entry can still count as live. */
+const STANDBY_LEFTOVER_MS = 60_000;
 
 export function createAiReadiness(deps: {
   connected: () => boolean;
@@ -618,6 +629,9 @@ export function createAiReadiness(deps: {
   // Counts each observed start of Tandem's Claude (not-running → running), so
   // a dismissal of its failure button lasts only until it next runs.
   let launcherRunEpoch = $state(0);
+  // When the current standby was first seen, for `launcherStandbyRecent`.
+  // Kept by the poll, because it depends on the read history.
+  let standbySince = $state<number | null>(null);
 
   // Drop stale async resolves for LAUNCHER reads (a poll that resolves after
   // the component is gone, or after a newer poll superseded it). Mirrors
@@ -706,6 +720,9 @@ export function createAiReadiness(deps: {
     }
     const next = body as LauncherStatus;
     if (isRunning(next) && !(status !== null && isRunning(status))) launcherRunEpoch++;
+    const nextStandby = next.available && !next.running ? next.standby : undefined;
+    if (nextStandby === undefined) standbySince = null;
+    else if (standbySince === null) standbySince = Date.now();
     status = next;
     launcherFresh = true;
     settledOnce = true;
@@ -964,6 +981,11 @@ export function createAiReadiness(deps: {
   const launcherStandby = $derived<LauncherStandby | null>(
     status !== null && status.available && !status.running ? (status.standby ?? null) : null,
   );
+  // Re-read on every poll (the poll reassigns `status`), so it lapses within
+  // one poll of the window closing.
+  const launcherStandbyRecent = $derived(
+    status !== null && standbySince !== null && Date.now() - standbySince < STANDBY_LEFTOVER_MS,
+  );
 
   // `chip` is the ONE place the `lastError` → CTA decision is made (see the
   // `AiChip` doc comment for why `cli-unusable` — a server-side probe taken at
@@ -1077,6 +1099,9 @@ export function createAiReadiness(deps: {
     },
     get launcherStandby() {
       return launcherStandby;
+    },
+    get launcherStandbyRecent() {
+      return launcherStandbyRecent;
     },
     get sessionCount() {
       return sessionCount;

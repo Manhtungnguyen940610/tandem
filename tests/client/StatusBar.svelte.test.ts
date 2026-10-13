@@ -16,6 +16,7 @@ const baseProps = {
   aiLauncherRestarting: false,
   aiLauncherStarting: false,
   aiLauncherStandby: null,
+  aiLauncherStandbyRecent: false,
   onStartClaude: () => {},
   aiSessionCount: null as number | null,
   aiState: "unconfigured" as const,

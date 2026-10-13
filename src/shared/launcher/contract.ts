@@ -269,6 +269,10 @@ export function parseLauncherSettings(raw: unknown): LauncherSettings | null {
 export interface LauncherSettingsResponse {
   settings: LauncherSettings;
   readOnly?: true;
+  /** The file exists but could not be read, so `settings` is the fallback
+   * Tandem is running by (waiting for Start), not a choice anyone saved. A
+   * save rewrites the file. */
+  unreadable?: true;
 }
 
 /** Loopback-only side-channel for bundled-skill refresh failures. The user

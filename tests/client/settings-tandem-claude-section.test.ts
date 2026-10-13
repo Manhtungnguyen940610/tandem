@@ -205,4 +205,58 @@ describe("SettingsTandemClaudeSection", () => {
       window.removeEventListener("tandem:launcher-changed", seen);
     }
   });
+
+  it("an unreadable file says so, and the controls stay usable so a save can repair it", async () => {
+    getBody = () => ({ settings: { ...stored, startMode: "on-click" }, unreadable: true });
+    const { container } = render(SettingsTandemClaudeSection);
+    await flush();
+    expect(q(container, "settings-modal-tandem-claude-unreadable").textContent).toContain(
+      "couldn't read its saved settings",
+    );
+    const auto = q<HTMLInputElement>(container, "settings-modal-tandem-claude-start-auto");
+    expect(auto.closest("fieldset")?.disabled).toBe(false);
+  });
+
+  it("a queued change is not snapped back when the save ahead of it lands", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    postResponder = async (patch) => {
+      if (first) {
+        first = false;
+        await gate;
+      }
+      stored = { ...stored, ...(patch as typeof stored) };
+      return json(200, { ok: true, settings: { ...stored } });
+    };
+    let releaseSecond!: () => void;
+    const secondGate = new Promise<void>((r) => {
+      releaseSecond = r;
+    });
+    const firstResponder = postResponder;
+    let calls = 0;
+    postResponder = async (patch) => {
+      calls += 1;
+      if (calls === 2) await secondGate;
+      return firstResponder(patch);
+    };
+    const { container } = render(SettingsTandemClaudeSection);
+    await flush();
+    await fireEvent.click(q(container, "settings-modal-tandem-claude-start-auto"));
+    await flush();
+    await fireEvent.click(q(container, "settings-modal-tandem-claude-lifetime-idle"));
+    await flush();
+    release();
+    await flush();
+    // The first save has landed; the second is still in flight. The lifetime
+    // the user chose must still be shown.
+    expect(
+      q<HTMLInputElement>(container, "settings-modal-tandem-claude-lifetime-idle").checked,
+    ).toBe(true);
+    releaseSecond();
+    await flush();
+    expect(stored).toMatchObject({ startMode: "auto", lifetime: "idle" });
+  });
 });

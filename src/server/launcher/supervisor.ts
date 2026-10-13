@@ -1385,6 +1385,14 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     return read.settings;
   }
 
+  /** The newest settings known at spawn time. A Settings change that lands
+   * while a start is between its read and its spawn (an unlocked crash restart
+   * awaiting its plan) updates `lastGoodSettings` and finds no child to apply
+   * to, so the spawn must take it from there rather than from its own read. */
+  function latestSettings(read: LauncherSettings): LauncherSettings {
+    return lastGoodSettings ?? read;
+  }
+
   function idleMsFor(settings: LauncherSettings): number | null {
     return settings.lifetime === "idle" ? settings.idleMinutes * idleMinuteMs : null;
   }
@@ -2311,18 +2319,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * `resumeAfterLicence` and the public `start()` wrapper. `epoch` is the
    * `stopEpoch` this start belongs to; the restart timer passes the one its
    * failure handler checks. */
-  async function startInternal(epoch = stopEpoch): Promise<void> {
+  async function startInternal(epoch = stopEpoch, known?: LauncherSettings): Promise<void> {
     // Counted for `restartPending` (#2180). The restart timer nulls itself and
     // calls this synchronously, so no status poll lands between the two.
     launching++;
     try {
-      await planAndSpawn(epoch);
+      await planAndSpawn(epoch, known);
     } finally {
       launching--;
     }
   }
 
-  async function planAndSpawn(epoch: number): Promise<void> {
+  /** `known`: settings the caller already read (boot), so they are not read
+   * twice. */
+  async function planAndSpawn(epoch: number, known?: LauncherSettings): Promise<void> {
     if (child) return;
     if (breakerTripped) return;
     stopRequested = false;
@@ -2331,7 +2341,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // spawn's own subscribe (#2181). After the `child` check, never before it:
     // arming beside a live spawn would owe its successor a duplicate wake.
     armGapWatch();
-    const settings = await readSettingsNow();
+    const settings = known ?? (await readSettingsNow());
     const plan = await buildPlan();
     // `buildPlan` yields, and `scheduleRestart` calls this function WITHOUT the
     // op lock — so a user `stop()` can complete during that await. It takes the
@@ -2390,7 +2400,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       return;
     }
     try {
-      await spawnOnce(plan, idleMsFor(settings));
+      await spawnOnce(plan, idleMsFor(latestSettings(settings)));
       // Reset backoff once a spawn runs long enough to be considered stable.
       // Must match RESUME_CONFIRM_MS — a doomed --resume exits at ~6s, so
       // the old 5s timer fired while the process was still alive, resetting
@@ -2406,15 +2416,22 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   async function start(): Promise<void> {
     return withLock(async () => {
       if (child || breakerTripped) return;
-      // The boot hold (#2195), decided before anything counts as launching: a
-      // held boot starts nothing, and counting it would show "Restarting
-      // Claude…" for the length of the reads and then flip to Start.
-      const settings = await readSettingsNow();
+      // The settings read counts as launching, so a status poll during it
+      // reads "starting" rather than a plain stopped launcher with a Restart
+      // button (#2180). It is one small file, so that window is milliseconds.
+      let settings: LauncherSettings;
+      launching++;
+      try {
+        settings = await readSettingsNow();
+      } finally {
+        launching--;
+      }
       if (settings.startMode !== "auto") {
-        // The plan still runs, for `configured` alone: a user with no
-        // integration yet reads as not-configured, and this standby decides
-        // their chip once the wizard writes one (`refreshConfigured`).
-        await buildPlan();
+        // The boot hold (#2195). The standby is set BEFORE the plan read, so
+        // no poll lands on a plain stopped launcher in between; the plan still
+        // runs, for `configured` alone — a user with no integration yet reads
+        // as not-configured, and this standby decides their chip once the
+        // wizard writes one (`refreshConfigured`).
         holdInStandby(settings.startMode === "off" ? "off" : "awaiting-start");
         if (settings.startMode === "on-click") armGapWatch();
         console.error(
@@ -2422,9 +2439,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
             ? "[Launcher] Tandem's Claude is turned off — not starting it"
             : "[Launcher] Tandem's Claude is set to start on click — waiting for Start",
         );
+        await buildPlan();
         return;
       }
-      await startInternal();
+      // Synchronous from the decrement above to the increment inside, so no
+      // poll lands between them; the settings travel along rather than being
+      // read a second time.
+      await startInternal(stopEpoch, settings);
     });
   }
 
@@ -2505,9 +2526,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // `respawn`'s licence check, so a refused one does not either. This covers
     // relaunch and start-fresh as well as Start: otherwise Claude would run
     // while Settings still said Off, and its first crash would stay down.
-    if (settings.startMode === "off") await persistStartMode("on-click");
+    if (settings.startMode === "off") {
+      await persistStartMode("on-click");
+      // Kept in step with the saved mode: if the spawn below fails, its error
+      // outranks this anyway, and if it is retried the pill must not still say
+      // "off" while Settings says "on click".
+      if (standby === "off") standby = "awaiting-start";
+    }
     await persistRequestedCwd(plan, cwdOverride, opts?.persistCwd);
-    await spawnOnce(plan, idleMsFor(settings));
+    await spawnOnce(plan, idleMsFor(latestSettings(settings)));
     return { spawned: true };
   }
 
@@ -2650,7 +2677,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
 
   async function updateSettings(patch: LauncherSettingsPatch): Promise<LauncherSettings> {
     return withLock(async () => {
-      const next = await updateLauncherSettings(opts.integrationsBase, patch);
+      let next: LauncherSettings;
+      try {
+        // An unreadable file merges onto what this supervisor last knew, not
+        // onto the fallback: a lifetime change made while antivirus holds the
+        // file must not also save `on-click` over the user's real start mode.
+        next = await updateLauncherSettings(opts.integrationsBase, patch, lastGoodSettings);
+      } catch (err) {
+        // Turning Claude off is never refused. If the mode cannot be saved —
+        // a file from a newer Tandem, a failed write — Claude still stops now;
+        // the caller still gets the error, because the next launch will not
+        // know it was turned off.
+        if (patch.startMode === "off" && standby !== "off") await stopByChoice("off");
+        throw err;
+      }
       lastGoodSettings = next;
       if (next.startMode === "off") {
         if (standby !== "off") await stopByChoice("off");

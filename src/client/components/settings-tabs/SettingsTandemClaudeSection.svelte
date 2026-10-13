@@ -63,6 +63,9 @@ const LOAD_ERROR = "Couldn't load these settings.";
 
 let settings = $state<LauncherSettings | null>(null);
 let readOnly = $state(false);
+/** The file could not be read: the controls show what Tandem is doing
+ * (waiting for Start), and the first save rewrites the file. */
+let unreadable = $state(false);
 let loadError = $state<string | null>(null);
 let saveError = $state<string | null>(null);
 /** The launcher will not run here at all (stdio, or switched off by the
@@ -95,9 +98,14 @@ function errorForCode(code: string | undefined): string {
   }
 }
 
+/** Render what the server stored. `idleText` is left alone unless the minutes
+ * changed, so a value the user is still typing is not wiped by an unrelated
+ * save landing. */
 function show(next: LauncherSettings): void {
+  if (settings === null || next.idleMinutes !== settings.idleMinutes) {
+    idleText = String(next.idleMinutes);
+  }
   settings = next;
-  idleText = String(next.idleMinutes);
 }
 
 /** Read the stored settings. Also the rollback after a failed save. */
@@ -105,7 +113,11 @@ async function loadSettings(): Promise<void> {
   try {
     const res = await fetch(`${API_BASE}${API_LAUNCHER_SETTINGS}`);
     const body = res.ok
-      ? ((await res.json().catch(() => null)) as { settings?: unknown; readOnly?: unknown } | null)
+      ? ((await res.json().catch(() => null)) as {
+          settings?: unknown;
+          readOnly?: unknown;
+          unreadable?: unknown;
+        } | null)
       : null;
     if (!mounted) return;
     const parsed = parseLauncherSettings(body?.settings);
@@ -116,6 +128,7 @@ async function loadSettings(): Promise<void> {
     loadError = null;
     show(parsed);
     readOnly = body?.readOnly === true;
+    unreadable = body?.unreadable === true;
   } catch {
     if (mounted) loadError = LOAD_ERROR;
   }
@@ -152,11 +165,15 @@ async function save(patch: LauncherSettingsPatch): Promise<void> {
       return;
     }
     if (next.startMode !== undefined) startModeChanged = true;
-    show(result.settings);
     next = queued;
     queued = null;
+    // Shown only once nothing is queued behind it: rendering an intermediate
+    // answer would snap a control the user changed meanwhile back until its
+    // own save landed.
+    if (next === null) show(result.settings);
   }
   saving = false;
+  unreadable = false;
   // Only the start mode changes what the status bar and chat panel show
   // (choosing Off stops Claude), so only it asks them to re-read.
   if (startModeChanged) window.dispatchEvent(new CustomEvent("tandem:launcher-changed"));
@@ -207,6 +224,12 @@ const controlsDisabled = $derived(settings === null || readOnly);
   {#if readOnly}
     <div class="settings-hint" data-testid="settings-modal-tandem-claude-readonly">
       These settings were saved by a newer version of Tandem, so they can't be changed here.
+    </div>
+  {/if}
+  {#if unreadable}
+    <div class="settings-hint" data-testid="settings-modal-tandem-claude-unreadable">
+      Tandem couldn't read its saved settings for its Claude, so it is waiting for you to click
+      Start. Choosing a setting here saves a fresh copy.
     </div>
   {/if}
   {#if launcherAbsent}

@@ -368,9 +368,31 @@ function sendNoIntegration(res: Response): void {
   });
 }
 
+/**
+ * The nonce GET's origin check. `assertOriginAllowlisted`, plus one case it
+ * cannot see: a browser sends NO `Origin` on a same-origin GET (measured
+ * against Chromium 2026-10-13: no `Origin`, `Sec-Fetch-Site: same-origin`; the
+ * same-origin POST carries `Origin`). The npm build serves the editor from the
+ * API's own origin (`tandem start` opens `http://127.0.0.1:<mcp port>`), so its
+ * every launcher action — Relaunch, Start fresh, and #2195's Start, Turn off
+ * and Settings save — failed here with a 403 before any of them could run.
+ *
+ * `Sec-Fetch-Site` is a forbidden header: a page cannot set it, and a
+ * cross-site `<img>` probe (which also sends no `Origin`) says `cross-site`, so
+ * it still cannot rotate the nonce out from under the user. A local non-browser
+ * process could forge it, but could equally forge `Origin`, so this widens
+ * nothing. Scoped to this one read rather than the shared gate.
+ */
+function refuseNonceOrigin(req: Request, res: Response): boolean {
+  if (req.headers.origin === undefined && req.headers["sec-fetch-site"] === "same-origin") {
+    return false;
+  }
+  return assertOriginAllowlisted(req, res, API_LAUNCHER_NONCE);
+}
+
 function makeNonceHandler(): Handler {
   return (req: Request, res: Response) => {
-    if (assertOriginAllowlisted(req, res, API_LAUNCHER_NONCE)) return;
+    if (refuseNonceOrigin(req, res)) return;
     if (assertLoopbackForMutation(req, res)) return;
     rotateNonce();
     res.json({ nonce: getGate().nonce });
@@ -807,17 +829,22 @@ function makeWorkingDirHandler(deps: LauncherRoutesDeps): Handler {
  *
  * Bare loopback check, like `cwd-preview`: `enforceLoopbackMutation` does not
  * cover GET, and the answer — two enums and an integer, no paths — is still a
- * fact about the person at this machine. Origin allowlist like every launcher
- * route. Answers with no supervisor (deferred, disabled, stdio) so Settings can
- * show the choice in every runtime. Reads the file each call; nothing polls it.
+ * fact about the person at this machine. **No origin gate**: a browser sends no
+ * `Origin` on a same-origin GET, so the gate would refuse the npm build's own
+ * editor, and it adds nothing here — the read has no side effect, and CORS
+ * already keeps a cross-origin page from reading the answer. Answers with no
+ * supervisor (deferred, disabled, stdio) so Settings can show the choice in
+ * every runtime. Reads the file each call; nothing polls it.
  */
 function makeSettingsGetHandler(deps: LauncherRoutesDeps): Handler {
   return async (req: Request, res: Response) => {
-    if (assertOriginAllowlisted(req, res, API_LAUNCHER_SETTINGS)) return;
     if (refuseNonLoopbackRead(req, res)) return;
     const read = await readLauncherSettings(deps.settingsBase);
     const body: LauncherSettingsResponse = { settings: read.settings };
     if (read.source === "file" && read.newer) body.readOnly = true;
+    // The file could not be read, so these are what Tandem is doing (waiting
+    // for Start), not a saved choice — and Settings must say so.
+    if (read.source === "fallback") body.unreadable = true;
     res.json(body);
   };
 }
