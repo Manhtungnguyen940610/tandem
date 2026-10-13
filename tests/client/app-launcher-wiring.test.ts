@@ -46,7 +46,7 @@ describe("App launcher wiring (#2195)", () => {
 describe("App resume-row wiring (#2196)", () => {
   it("the chat panel mount passes the resume row and its remedy handler", () => {
     const mount = chatMount();
-    expect(mount).toMatch(/\{tandemClaudeResume\}/);
+    expect(mount).toMatch(/tandemClaudeResume=\{chatResumeState\.view\}/);
     expect(mount).toMatch(/\{onResumeRemedy\}/);
   });
 
@@ -59,7 +59,7 @@ describe("App resume-row wiring (#2196)", () => {
   });
 
   it("the no-agent toast stands aside for a chat that is starting Claude, and only for chat", () => {
-    expect(APP).toMatch(/if \(viaKey === "chat" && chatResumeState\.pending\) return;/);
+    expect(APP).toMatch(/startingForMessage: viaKey === "chat" && chatResumeState\.pending,/);
   });
 
   it("the remedy routes through the AiCtaAction record", () => {

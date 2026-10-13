@@ -59,8 +59,8 @@ import Toolbar from "./editor/toolbar/Toolbar.svelte";
 import { createAccentHue } from "./hooks/useAccentHue.svelte";
 import {
   AI_CTA,
-  type AiChip,
   type AiCtaAction,
+  type AiRemedy,
   createAiReadiness,
 } from "./hooks/useAiReadiness.svelte";
 import {
@@ -637,8 +637,7 @@ function turnOffClaude(): void {
 
 /** The chat panel's resume row (#2196): a chat sent while Tandem's Claude was
  *  stopped by choice, which the server is starting it to answer. */
-const chatResumeState = createChatResume(aiReadiness);
-const tandemClaudeResume = $derived(chatResumeState.view);
+const chatResumeState = createChatResume(aiReadiness, refreshAiReadinessAfterLauncherAction);
 
 /** The chat panel's Start / Turn off control (#2195): Turn off while Tandem's
  *  Claude runs, Start while it is in standby, hidden otherwise (no launcher,
@@ -649,12 +648,12 @@ const tandemClaudeControl = $derived<"start" | "turn-off" | null>(
     : // Hidden beside the resume row (#2196), which carries its own remedy.
       aiReadiness.launcherStandby !== null &&
         !aiReadiness.launcherRestarting &&
-        tandemClaudeResume === null
+        chatResumeState.view === null
       ? "start"
       : null,
 );
 
-function onResumeRemedy(remedy: Exclude<AiChip, null>): void {
+function onResumeRemedy(remedy: AiRemedy): void {
   AI_CTA_HANDLERS[AI_CTA[remedy].action]();
 }
 
@@ -695,9 +694,6 @@ $effect(() => {
   const handleAddressedAi = async (e: Event) => {
     const via = (e as CustomEvent<{ via?: string }>).detail?.via;
     const viaKey = via ?? "chat";
-    // A chat that is starting Tandem's Claude has the chat panel's resume row
-    // (#2196); a toast saying "nothing will answer" would contradict it.
-    if (viaKey === "chat" && chatResumeState.pending) return;
     const noun = via === "comment" ? "Comment" : "Message";
     // Solo short-circuits before the probe so those sends don't pay for a
     // fetch whose answer `addressedAiNotice` would discard anyway.
@@ -734,6 +730,7 @@ $effect(() => {
       sessionLive: probe.sessionLive,
       chip: aiReadiness.chip,
       pushDelivery: aiReadiness.pushDelivery,
+      startingForMessage: viaKey === "chat" && chatResumeState.pending,
     });
     if (notice === null) return;
 
@@ -2732,7 +2729,7 @@ const shouldShowModelPicker = $derived(
             tandemClaudeControl={tandemClaudeControl}
             onStartClaude={startClaude}
             onTurnOffClaude={turnOffClaude}
-            {tandemClaudeResume}
+            tandemClaudeResume={chatResumeState.view}
             {onResumeRemedy}
             visible={chatVisible}
           />

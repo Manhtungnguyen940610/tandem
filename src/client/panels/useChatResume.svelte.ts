@@ -20,8 +20,10 @@ export type ChatResumeReadiness = Pick<
 >;
 
 /** When to re-read the launcher status after a send that is starting Claude.
- *  The poll is 8 s; these let the row move on as soon as the start shows up. */
-export const RESUME_REFRESH_MS = [500, 2_000, 5_000, 10_000] as const;
+ *  The server marks the start pending as the message lands, so one quick read
+ *  shows "Starting" without waiting out the 8 s poll; the launcher action's
+ *  own schedule then catches it running. */
+export const RESUME_FIRST_READ_MS = 500;
 
 /**
  * The chat panel's resume row, as state (#2196): see `chat-resume.ts` for what
@@ -30,7 +32,12 @@ export const RESUME_REFRESH_MS = [500, 2_000, 5_000, 10_000] as const;
  * `noteSent()` runs at send time, BEFORE the `tandem:addressed-ai` dispatch,
  * because the no-agent toast reads `pending` to stand aside.
  */
-export function createChatResume(r: ChatResumeReadiness): {
+export function createChatResume(
+  r: ChatResumeReadiness,
+  /** The re-reads every launcher action takes afterwards (App's
+   *  `refreshAiReadinessAfterLauncherAction`): a message start is one. */
+  afterLauncherAction: () => void,
+): {
   readonly view: ChatResume | null;
   /** A send is being answered by a start — the toast must not contradict it. */
   readonly pending: boolean;
@@ -58,12 +65,12 @@ export function createChatResume(r: ChatResumeReadiness): {
   // Per request: a second send restarts the schedule.
   $effect(() => {
     if (request === null) return;
-    const timers = RESUME_REFRESH_MS.map((ms) => setTimeout(() => r.refreshLauncherStatus(), ms));
-    timers.push(
+    const timers = [
+      setTimeout(() => r.refreshLauncherStatus(), RESUME_FIRST_READ_MS),
       setTimeout(() => {
         now = Date.now();
       }, RESUME_GRACE_MS),
-    );
+    ];
     return () => {
       for (const t of timers) clearTimeout(t);
     };
@@ -86,6 +93,7 @@ export function createChatResume(r: ChatResumeReadiness): {
         standby !== null && (r.launcherStartsOnMessage || r.launcherStarting)
           ? { at: Date.now(), from: standby }
           : null;
+      if (request !== null) afterLauncherAction();
     },
   };
 }

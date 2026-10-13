@@ -36,6 +36,11 @@ import type { AiChip, PushDelivery } from "../hooks/useAiReadiness.svelte";
  *      server is gone, but only as a CONSEQUENCE — reading it as "no AI" and
  *      promising the message will be seen "when one connects" is a second false
  *      promise in place of the one this whole change removed.
+ *   2b. A chat that is starting Tandem's Claude (#2196) gets no notice: the
+ *      chat panel's resume row is already saying what happens to it, and the
+ *      `start` chip's "nothing will answer until you start it" would
+ *      contradict that row. After rule 2, because a server that has gone away
+ *      since the send makes the resume row's promise moot.
  *   3. A live session decides which of the remaining branches applies. Without
  *      one, only the agent-absence notice can be correct; with one, only the
  *      delivery notice can be.
@@ -77,6 +82,8 @@ export function addressedAiNotice(input: {
   chip: AiChip;
   /** Only `"none"` is actionable; `"attached"` and `"unknown"` stay silent. */
   pushDelivery: PushDelivery;
+  /** This send is a chat that is starting Tandem's Claude (rule 2b). */
+  startingForMessage: boolean;
 }): AddressedAiNotice | null {
   // Rule 1. Belt-and-braces: the production caller short-circuits on Solo
   // before reaching here (to skip the probe), so this branch is defensive —
@@ -88,6 +95,9 @@ export function addressedAiNotice(input: {
   // branch: with the server gone `sessionLive` is false too, so ordering these
   // the other way round would report the consequence and hide the cause.
   if (input.serverUnreachable) return { kind: "offline" };
+
+  // Rule 2b — the chat panel's resume row speaks for this message.
+  if (input.startingForMessage) return null;
 
   // Rule 3 — no agent attached.
   if (!input.sessionLive) {

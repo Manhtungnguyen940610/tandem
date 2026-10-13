@@ -235,6 +235,9 @@ export type AiChip = "connect" | "setup" | "sign-in" | "restart" | "start" | nul
  */
 export type AiCtaAction = "connect" | "restart" | "start";
 
+/** A chip that is present — what `AI_CTA` is keyed on, and what a remedy is. */
+export type AiRemedy = Exclude<AiChip, null>;
+
 /**
  * Everything a surface needs to render an `AiChip`'s call to action: its copy
  * and, crucially, WHICH action it performs.
@@ -535,7 +538,7 @@ export interface AiReadiness {
    * `null` while it runs, while a start or restart is under way, and while
    * the status is unknown or transient.
    */
-  readonly launcherRemedy: Exclude<AiChip, null> | null;
+  readonly launcherRemedy: AiRemedy | null;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
    *  `countDistinctClients`), or `null` when unknown or unreachable. */
   readonly sessionCount: number | null;
@@ -1009,7 +1012,14 @@ export function createAiReadiness(deps: {
       status.startsOnMessage === true &&
       !serverUnreachable,
   );
-  const launcherRemedy = $derived<Exclude<AiChip, null> | null>(
+
+  // `launcherRemedy` is the ONE place the `lastError` → CTA decision is made
+  // (see the `AiChip` doc comment for why `cli-unusable` — a server-side probe
+  // taken at breaker-trip time — is the branch that means "go install Claude
+  // Code", and why `circuit-open` on its own does not). `chip` is that remedy
+  // behind the Solo and state gates. Views must render off these values alone,
+  // not re-derive their own copy of this ternary.
+  const launcherRemedy = $derived<AiRemedy | null>(
     status === null
       ? null
       : !status.available
@@ -1022,22 +1032,10 @@ export function createAiReadiness(deps: {
             ? "start"
             : chipForStoppedLauncher(lastError),
   );
-
-  // `chip` is the ONE place the `lastError` → CTA decision is made (see the
-  // `AiChip` doc comment for why `cli-unusable` — a server-side probe taken at
-  // breaker-trip time — is the branch that means "go install Claude Code", and
-  // why `circuit-open` on its own does not). Views must render off this value
-  // alone, not re-derive their own copy of this ternary.
+  // `state` is `unconfigured` or `stopped` only off a settled, non-transient
+  // status with no live session, so the remedy is exactly the chip there.
   const chip = $derived<AiChip>(
-    deps.soloMode()
-      ? null
-      : state === "unconfigured"
-        ? "connect"
-        : state === "stopped" && !restartPending
-          ? launcherStandby !== null
-            ? "start"
-            : chipForStoppedLauncher(lastError)
-          : null,
+    deps.soloMode() || (state !== "unconfigured" && state !== "stopped") ? null : launcherRemedy,
   );
 
   // The running arm of `status`, or null. One gate, narrowed once, so the three

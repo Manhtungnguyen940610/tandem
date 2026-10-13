@@ -281,6 +281,13 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
       res.json(body);
       return;
     }
+    // Loopback-only, beside both stopped shapes below (#2195, #2196).
+    const standbyFields = raw.running
+      ? {}
+      : {
+          ...(raw.standby ? { standby: raw.standby } : {}),
+          ...(raw.startsOnMessage ? { startsOnMessage: true as const } : {}),
+        };
     if (raw.running) {
       if (!loopback) {
         res.json({ available: true, running: true });
@@ -321,8 +328,7 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
             lastError: raw.lastError,
             restartPending: true,
             // A Start from standby in progress (#2195): "Starting", not "Restarting".
-            ...(raw.standby ? { standby: raw.standby } : {}),
-            ...(raw.startsOnMessage ? { startsOnMessage: true } : {}),
+            ...standbyFields,
             skillRefresh,
           }
         : { available: true, running: false };
@@ -350,8 +356,7 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
           available: true,
           running: false,
           lastError: raw.lastError,
-          ...(raw.standby ? { standby: raw.standby } : {}),
-          ...(raw.startsOnMessage ? { startsOnMessage: true } : {}),
+          ...standbyFields,
           skillRefresh,
         }
       : { available: true, running: false };

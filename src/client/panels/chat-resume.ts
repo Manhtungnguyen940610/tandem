@@ -1,5 +1,5 @@
 import type { LauncherStandby } from "../../shared/launcher/contract";
-import type { AiChip } from "../hooks/useAiReadiness.svelte";
+import type { AiRemedy } from "../hooks/useAiReadiness.svelte";
 
 /**
  * The chat panel's "Claude is resuming…" row (#2196): what happened to a chat
@@ -17,7 +17,7 @@ import type { AiChip } from "../hooks/useAiReadiness.svelte";
  */
 export type ChatResume =
   | { kind: "resuming"; verb: "resuming" | "starting" }
-  | { kind: "failed"; remedy: Exclude<AiChip, null> };
+  | { kind: "failed"; remedy: AiRemedy };
 
 export interface ChatResumeRequest {
   at: number;
@@ -38,7 +38,7 @@ export interface ChatResumeInput {
   /** Still in standby with nothing under way. */
   standby: LauncherStandby | null;
   /** `launcherRemedy`. */
-  remedy: Exclude<AiChip, null> | null;
+  remedy: AiRemedy | null;
   now: number;
 }
 
@@ -47,20 +47,21 @@ export function chatResume(
   input: ChatResumeInput,
 ): ChatResume | null {
   if (request === null || input.running) return null;
-  const verb = request.from === "idle" ? "resuming" : "starting";
-  if (input.restarting) return { kind: "resuming", verb };
-  // Still in standby: the server has not begun yet. Inside the grace that is
-  // the normal gap between the send and the next status read.
-  if (input.standby !== null) {
-    return input.now - request.at < RESUME_GRACE_MS
-      ? { kind: "resuming", verb }
-      : { kind: "failed", remedy: "start" };
-  }
+  const resuming: ChatResume = {
+    kind: "resuming",
+    verb: request.from === "idle" ? "resuming" : "starting",
+  };
+  const inGrace = input.now - request.at < RESUME_GRACE_MS;
+  if (input.restarting) return resuming;
+  // Still in standby with nothing under way: the server has not begun, or has
+  // not been re-read since the send. Inside the grace that is the normal gap;
+  // past it the start is not coming (another AI attached meanwhile, say).
+  if (input.standby !== null) return inGrace ? resuming : { kind: "failed", remedy: "start" };
   // Not running, not starting, not in standby: the start ended in a failure
   // the launcher reports (`lastError`, not-configured) — or the status is
   // unknown for now, which earns the grace and then silence, never a claim.
   if (input.remedy !== null) return { kind: "failed", remedy: input.remedy };
-  return input.now - request.at < RESUME_GRACE_MS ? { kind: "resuming", verb } : null;
+  return inGrace ? resuming : null;
 }
 
 const RESUMING_TEXT = {

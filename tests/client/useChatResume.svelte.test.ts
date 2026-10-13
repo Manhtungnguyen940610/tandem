@@ -12,7 +12,7 @@ import { RESUME_GRACE_MS } from "../../src/client/panels/chat-resume";
 import {
   type ChatResumeReadiness,
   createChatResume,
-  RESUME_REFRESH_MS,
+  RESUME_FIRST_READ_MS,
 } from "../../src/client/panels/useChatResume.svelte";
 import type { LauncherStandby } from "../../src/shared/launcher/contract";
 
@@ -26,6 +26,7 @@ function fakeReadiness() {
     launcherRemedy: "start" as Exclude<AiChip, null> | null,
   });
   const refreshLauncherStatus = vi.fn();
+  const afterLauncherAction = vi.fn();
   const readiness: ChatResumeReadiness = {
     get launcherRunning() {
       return r.launcherRunning;
@@ -47,15 +48,15 @@ function fakeReadiness() {
     },
     refreshLauncherStatus,
   };
-  return { r, readiness, refreshLauncherStatus };
+  return { r, readiness, refreshLauncherStatus, afterLauncherAction };
 }
 
 let dispose: (() => void) | null = null;
 
-function mount(readiness: ChatResumeReadiness) {
+function mount(readiness: ChatResumeReadiness, afterLauncherAction: () => void = () => {}) {
   let made!: ReturnType<typeof createChatResume>;
   dispose = $effect.root(() => {
-    made = createChatResume(readiness);
+    made = createChatResume(readiness, afterLauncherAction);
   });
   flushSync();
   return made;
@@ -135,16 +136,26 @@ describe("createChatResume", () => {
     expect(resume.pending).toBe(false);
   });
 
-  it("re-reads the launcher status soon after the send", () => {
-    const { readiness, refreshLauncherStatus } = fakeReadiness();
-    const resume = mount(readiness);
+  it("re-reads the launcher status soon after the send, and runs the launcher action's re-reads", () => {
+    const { readiness, refreshLauncherStatus, afterLauncherAction } = fakeReadiness();
+    const resume = mount(readiness, afterLauncherAction);
     resume.noteSent();
     flushSync();
+    expect(afterLauncherAction).toHaveBeenCalledOnce();
     expect(refreshLauncherStatus).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(RESUME_REFRESH_MS[0]);
+    vi.advanceTimersByTime(RESUME_FIRST_READ_MS);
     expect(refreshLauncherStatus).toHaveBeenCalledOnce();
-    vi.advanceTimersByTime(RESUME_REFRESH_MS.at(-1) ?? 0);
-    expect(refreshLauncherStatus).toHaveBeenCalledTimes(RESUME_REFRESH_MS.length);
+  });
+
+  it("a send that starts nothing runs no re-reads", () => {
+    const { r, readiness, refreshLauncherStatus, afterLauncherAction } = fakeReadiness();
+    r.launcherStartsOnMessage = false;
+    const resume = mount(readiness, afterLauncherAction);
+    resume.noteSent();
+    flushSync();
+    vi.advanceTimersByTime(RESUME_FIRST_READ_MS * 10);
+    expect(afterLauncherAction).not.toHaveBeenCalled();
+    expect(refreshLauncherStatus).not.toHaveBeenCalled();
   });
 
   it("stops promising when the grace runs out with nothing begun — on a timer", () => {

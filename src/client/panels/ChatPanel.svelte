@@ -466,26 +466,37 @@ async function exportChat() {
       </div>
     {/each}
 
+    {#snippet typingDots()}
+      <span style="display: inline-flex; gap: 3px;">
+        {#each TYPING_DOT_DELAYS as delay (delay)}
+          <!-- Only the per-dot delay stays inline: it is the one value that
+               varies across the three dots, and it is what makes them bounce
+               in sequence rather than in unison. Everything else moved into
+               `.chat-typing-dot` so the reduce-motion guard has a rule to
+               beat — an inline `animation` shorthand can only be overridden
+               with `!important`. -->
+          <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
+        {/each}
+      </span>
+    {/snippet}
     {#if tandemClaudeResume?.kind === "resuming"}
       <div
         aria-hidden="true"
+        class="chat-status-row"
         data-testid="chat-tandem-claude-resuming"
         data-verb={tandemClaudeResume.verb}
-        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: var(--tandem-author-claude); display: flex; align-items: center; gap: var(--tandem-space-2);"
+        style="color: var(--tandem-author-claude);"
       >
-        <span style="display: inline-flex; gap: 3px;">
-          {#each TYPING_DOT_DELAYS as delay (delay)}
-            <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
-          {/each}
-        </span>
+        {@render typingDots()}
         <span>{chatResumeLabel(tandemClaudeResume)}</span>
       </div>
     {:else if tandemClaudeResume?.kind === "failed"}
       {@const remedy = tandemClaudeResume.remedy}
       <div
+        class="chat-status-row"
         data-testid="chat-tandem-claude-resume-failed"
         data-remedy={remedy}
-        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: var(--tandem-warning-fg-strong); display: flex; align-items: center; flex-wrap: wrap; gap: var(--tandem-space-2);"
+        style="color: var(--tandem-warning-fg-strong); flex-wrap: wrap;"
       >
         <span aria-hidden="true">{chatResumeLabel(tandemClaudeResume)}</span>
         <button
@@ -502,22 +513,13 @@ async function exportChat() {
     {:else if pickup}
       <div
         aria-hidden="true"
+        class="chat-status-row"
         data-testid="chat-pickup-status"
         data-pickup={pickup.kind}
-        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: {pickup.kind === 'waiting' ? 'var(--tandem-fg-muted)' : 'var(--tandem-author-claude)'}; display: flex; align-items: center; gap: var(--tandem-space-2);"
+        style="color: {pickup.kind === 'waiting' ? 'var(--tandem-fg-muted)' : 'var(--tandem-author-claude)'};"
       >
         {#if pickup.kind === "working"}
-          <span style="display: inline-flex; gap: 3px;">
-            {#each TYPING_DOT_DELAYS as delay (delay)}
-              <!-- Only the per-dot delay stays inline: it is the one value that
-                   varies across the three dots, and it is what makes them bounce
-                   in sequence rather than in unison. Everything else moved into
-                   `.chat-typing-dot` so the reduce-motion guard has a rule to
-                   beat — an inline `animation` shorthand can only be overridden
-                   with `!important`. -->
-              <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
-            {/each}
-          </span>
+          {@render typingDots()}
         {/if}
         <span>{chatPickupLabel(pickup)}</span>
       </div>
@@ -679,6 +681,16 @@ async function exportChat() {
      table) — the dots stay visible and static, which is still a legible
      "thinking" affordance. The inline `animation-delay` on each dot survives
      `animation: none`, but a delay with no animation-name is inert. */
+  /* The pickup row and the resume rows (#2196) share everything but colour. */
+  .chat-status-row {
+    padding: var(--tandem-space-2) var(--tandem-space-3);
+    margin-bottom: var(--tandem-space-2);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: var(--tandem-space-2);
+  }
+
   .chat-typing-dot {
     width: 5px;
     height: 5px;

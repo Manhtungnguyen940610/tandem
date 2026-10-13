@@ -2218,6 +2218,33 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
     expect(sup.status()).toMatchObject({ running: false, standby: "off" });
   });
 
+  it("the status reads as starting from the moment the message lands", async () => {
+    const { sup, emit } = await stoppedByChoice("idle");
+    const read = deferred<string>();
+    const reads = interceptIntegrationsReads((n, pass) => (n === 1 ? read.promise : pass()));
+    try {
+      emit(chatEvent());
+      // Synchronously, before the start has even taken the lock.
+      expect(sup.status()).toMatchObject({ restartPending: true, standby: "idle" });
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+    } finally {
+      reads.restore();
+    }
+    await nthChild(2);
+  });
+
+  it("a declined start clears the pending status", async () => {
+    let other = false;
+    const { sup, emit } = await stoppedByChoice("off", { otherAiAttached: () => other });
+    emit(chatEvent());
+    // Clear when the message landed; attached by the time its start runs
+    // (the lock body runs on a later microtask).
+    other = true;
+    expect(sup.status()).toMatchObject({ restartPending: true });
+    await waitFor(() => !("restartPending" in sup.status()), "the pending flag to clear");
+    expect(children).toHaveLength(1);
+  });
+
   it("a burst of messages makes exactly one spawn", async () => {
     const { emit } = await stoppedByChoice("idle");
     for (let i = 0; i < 5; i++) emit(chatEvent());
