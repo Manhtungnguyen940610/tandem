@@ -30,6 +30,9 @@ function renderChat() {
       onClear: async () => {},
       onExport: async () => {},
       onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
     },
   });
 }
