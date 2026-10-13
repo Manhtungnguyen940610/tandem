@@ -36,7 +36,7 @@ describe("index.ts wires the one-time greeting (#2197)", () => {
     const call = (INDEX.match(/createSupervisor\(\{[\s\S]*?\}\);/g) ?? [])[0] ?? "";
     expect(call).toMatch(/isOwed: \(\) => isGreetingOwed\(appData\)/);
     expect(call).toMatch(/markDone: \(\) => markGreeted\(appData, APP_VERSION\)/);
-    expect(call).toMatch(/subscribeClaudeChat: onClaudeChatAppended,/);
+    expect(call).toMatch(/subscribeTandemReply: onTandemReply,/);
   });
 
   it("arms the greeting at boot from the version check, before the launcher starts", () => {

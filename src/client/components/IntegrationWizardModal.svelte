@@ -28,7 +28,6 @@
 import { untrack } from "svelte";
 import { BYO_MODELS_ENABLED, COWORK_ENABLED } from "../../shared/constants.js";
 import type { ApplyItemResult, ExistingMcpInstall } from "../../shared/integrations/contract.js";
-import type { LauncherStandby } from "../../shared/launcher/contract.js";
 import {
   COWORK_PREFLIGHT_CHECKING,
   COWORK_PREFLIGHT_FAILED,
@@ -38,7 +37,6 @@ import {
   undetectedDetail,
 } from "../cowork/cowork-helpers.js";
 import { coworkToggleIntegration, type InvokeFn, loadInvoke } from "../cowork/cowork-invoke.js";
-import type { AiRemedy } from "../hooks/useAiReadiness.svelte";
 import {
   autostartWizardDefault,
   createAutostart,
@@ -65,6 +63,7 @@ import {
   computeDoneHeaderState,
   type PushSupportNote,
   pushSupportNote,
+  type TandemClaudeLive,
   tandemClaudeDoneCopy,
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
@@ -86,11 +85,7 @@ interface Props {
    * since failed or come up is reported as it is. App passes readiness; a mount
    * without it shows the apply's answer alone.
    */
-  tandemClaudeLive?: {
-    running: boolean;
-    remedy: AiRemedy | null;
-    standby: LauncherStandby | null;
-  } | null;
+  tandemClaudeLive?: TandemClaudeLive | null;
 }
 
 let { open, onClose, onSetupModels, tandemClaudeLive = null }: Props = $props();

@@ -2669,7 +2669,7 @@ describe("#2197 — the one-time greeting", () => {
     const markDone = vi.fn(async () => {
       state.owed = false;
     });
-    const chatCbs = new Set<() => void>();
+    const replyCbs = new Set<(sessionId: string | undefined) => void>();
     const extra: ExtraOpts = {
       greeting: {
         isOwed: () => {
@@ -2678,13 +2678,14 @@ describe("#2197 — the one-time greeting", () => {
         },
         markDone,
       },
-      subscribeClaudeChat: (cb) => {
-        chatCbs.add(cb);
-        return () => chatCbs.delete(cb);
+      subscribeTandemReply: (cb) => {
+        replyCbs.add(cb);
+        return () => replyCbs.delete(cb);
       },
     };
-    const claudeWrote = () => {
-      for (const cb of chatCbs) cb();
+    /** A `tandem_reply` landed; no session id unless one is given. */
+    const claudeWrote = (sessionId?: string) => {
+      for (const cb of [...replyCbs]) cb(sessionId);
     };
     return { state, markDone, extra, claudeWrote };
   }
@@ -2741,6 +2742,19 @@ describe("#2197 — the one-time greeting", () => {
     await sup.startFresh(cwdDir);
     const child2 = await nthChild(2);
     expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a reply from a session this supervisor did not spawn is not the greeting; its own child's is", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    const own = JSON.parse(
+      fs.readFileSync(path.join(baseDir, "launcher-session.json"), "utf8"),
+    ) as { sessionId: string };
+    g.claudeWrote("someone-else");
+    expect(g.markDone).not.toHaveBeenCalled();
+    g.claudeWrote(own.sessionId);
+    expect(g.markDone).toHaveBeenCalledTimes(1);
   });
 
   it("a marker write that fails cannot make this process greet twice", async () => {

@@ -1160,7 +1160,7 @@ export function createAiReadiness(deps: {
     status !== null && standbySince !== null && Date.now() - standbySince < STANDBY_LEFTOVER_MS,
   );
   const greetingLate = $derived(
-    status !== null && status.available && "greetingLate" in status && status.greetingLate === true,
+    status !== null && status.available && status.greetingLate === true,
   );
   const launcherStartsOnMessage = $derived(
     status !== null &&

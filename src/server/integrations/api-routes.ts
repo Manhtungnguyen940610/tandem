@@ -209,7 +209,7 @@ async function decideTandemClaude(
     console.error("[Tandem] apply: starting Tandem's Claude failed:", err);
     return "unknown";
   }
-  if (!pending || typeof pending.then !== "function") return "unknown";
+  if (!pending) return "unknown";
   // Handled either way, so a late rejection is never unhandled (#2125).
   const guarded = pending.catch((err: unknown) => {
     console.error("[Tandem] apply: starting Tandem's Claude failed:", err);

@@ -147,9 +147,10 @@ $effect(() => {
 let now = $state(Date.now());
 // Either row replaces the pickup row (one answer to "what is happening with my
 // message"); the template and the live region put the resume row first.
-const greetingNote = $derived(tandemClaudeGreetingLate);
 const pickup = $derived(
-  tandemClaudeResume || greetingNote ? null : chatPickup(messages, Math.max(now, Date.now())),
+  tandemClaudeResume || tandemClaudeGreetingLate
+    ? null
+    : chatPickup(messages, Math.max(now, Date.now())),
 );
 const pickupKind = $derived(pickup?.kind ?? null);
 
@@ -174,7 +175,7 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
-  const kind = tandemClaudeResume?.kind ?? (greetingNote ? "greeting" : pickupKind);
+  const kind = tandemClaudeResume?.kind ?? (tandemClaudeGreetingLate ? "greeting" : pickupKind);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -535,15 +536,15 @@ async function exportChat() {
           {AI_CTA[remedy].label}
         </button>
       </div>
-    {:else if greetingNote}
+    {:else if tandemClaudeGreetingLate}
       {@const greet =
-        greetingNote === "relaunch"
+        tandemClaudeGreetingLate === "relaunch"
           ? GREETING_RELAUNCH
-          : AI_CTA[greetingNote]}
+          : AI_CTA[tandemClaudeGreetingLate]}
       <div
         class="chat-status-row chat-status-row-wrap"
         data-testid="chat-greeting-late"
-        data-action={greetingNote}
+        data-action={tandemClaudeGreetingLate}
         style="color: var(--tandem-warning-fg-strong);"
       >
         <span aria-hidden="true">{GREETING_LATE_TEXT}</span>
@@ -553,7 +554,7 @@ async function exportChat() {
           data-testid="chat-greeting-late-action"
           title={greet.title}
           aria-label={greet.ariaLabel}
-          onclick={() => onGreetingAction(greetingNote)}
+          onclick={() => onGreetingAction(tandemClaudeGreetingLate)}
         >
           {greet.label}
         </button>
@@ -578,7 +579,7 @@ async function exportChat() {
       srOnly
       message={tandemClaudeResume
         ? chatResumeLabel(tandemClaudeResume)
-        : greetingNote
+        : tandemClaudeGreetingLate
           ? GREETING_LATE_TEXT
           : chatPickupAnnouncement(pickupKind)}
       data-testid="chat-pickup-live"

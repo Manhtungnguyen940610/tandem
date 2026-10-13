@@ -27,13 +27,14 @@ import { attachCtrlObservers } from "./events/queue.js";
 import { sweepDocBackups } from "./file-io/doc-backup.js";
 import { reapOrphanedTemps } from "./file-io/reaper.js";
 import { unwatchAll } from "./file-watcher.js";
+import { armFirstRunGreeting, isGreetingOwed, markGreeted } from "./launcher/greeting.js";
 import { resolveInitialLauncherReason } from "./launcher/initial-reason.js";
 import {
   startLocalModelCollaborator,
   stopLocalModelCollaborator,
 } from "./local-model/collaborator.js";
 import { formatLogLine } from "./log-filter.js";
-import { onClaudeChatAppended } from "./mcp/awareness.js";
+import { onTandemReply } from "./mcp/awareness.js";
 import {
   restoreCtrlSession,
   restoreOpenDocuments,
@@ -150,7 +151,6 @@ async function startLauncherSupervisor(): Promise<void> {
     // Assigned before `start()` so a supervisor that spawned a reaper and then
     // threw is still reachable by `shutdown()`. A non-null supervisor with a
     // `spawn-failed` reason is the pre-existing shape here.
-    const { isGreetingOwed, markGreeted } = await import("./launcher/greeting.js");
     const appData = resolveAppDataDir();
     launcherSupervisor = createSupervisor({
       integrationsBase: appData,
@@ -164,7 +164,7 @@ async function startLauncherSupervisor(): Promise<void> {
         isOwed: () => isGreetingOwed(appData),
         markDone: () => markGreeted(appData, APP_VERSION),
       },
-      subscribeClaudeChat: onClaudeChatAppended,
+      subscribeTandemReply: onTandemReply,
     });
     await launcherSupervisor.start();
   } catch (err) {
@@ -793,7 +793,6 @@ async function main() {
       // everyone on the first run of v1.0. Before the launcher starts (below),
       // so the first spawn reads it. Not into a read-only store.
       if (!isStoreReadOnly()) {
-        const { armFirstRunGreeting } = await import("./launcher/greeting.js");
         await armFirstRunGreeting(resolveAppDataDir(), {
           firstInstall: versionChange === "first-install",
           appVersion: APP_VERSION,

@@ -214,12 +214,14 @@ interface SupervisorOpts {
    */
   greeting?: { isOwed: () => boolean; markDone: () => Promise<void> };
   /**
-   * Seam onto Claude's chat writes (#2197): `cb` runs whenever an AI chat
-   * message is appended (`onClaudeChatAppended` in `mcp/awareness.ts`, wired in
+   * Seam onto `tandem_reply` (#2197): `cb` runs whenever a `tandem_reply`
+   * lands a chat message, with the caller's Claude session id, undefined when
+   * its transport sends none (`onTandemReply` in `mcp/awareness.ts`, wired in
    * `index.ts`; this module must not import the MCP layer). That is how the
-   * supervisor learns the greeting arrived. Default: never.
+   * supervisor learns the greeting arrived; a reply from a session it did not
+   * spawn is not the greeting. Default: never.
    */
-  subscribeClaudeChat?: (cb: () => void) => () => void;
+  subscribeTandemReply?: (cb: (sessionId: string | undefined) => void) => () => void;
   /** Override for `GREETING_REPLY_WINDOW_MS`, for tests. */
   greetingWindowMs?: number;
 }
@@ -565,7 +567,8 @@ export type SupervisorStatus =
       standby?: LauncherStandby;
       /** Only beside `standby` (#2196): a chat message sent now would start
        * Tandem's Claude — no other AI is attached and the licence admits it. */
-      startsOnMessage?: true /** The greeting is late (#2197) — see `LauncherStatus`. */;
+      startsOnMessage?: true;
+      /** The greeting is late (#2197) — see `LauncherStatus`. */
       greetingLate?: true;
     }
   | {
@@ -1116,17 +1119,23 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   /**
    * The one-time greeting in this process (#2197), or null before one is
    * written. `pending` from the moment the turn is written; `answered` once a
-   * Claude chat message lands (and the marker is then marked done);
+   * `tandem_reply` from this supervisor's own child lands (and the marker is
+   * then marked done);
    * `unanswered` if the turn ends, or its child exits, with no message. A
    * process greets at most once successfully (`greetedThisProcess`), so a
    * marker write that failed cannot greet again on the next spawn.
    */
   let greeting: { phase: "pending" | "answered" | "unanswered"; sentAt: number } | null = null;
   let greetedThisProcess = false;
-  (opts.subscribeClaudeChat ?? (() => () => {}))(() => {
+  // A reply carrying another session's id is that session's, not the
+  // greeting. One with no id is counted: the header is optional, and a child
+  // that never sends it must not owe its greeting on every spawn.
+  const unsubscribeTandemReply = (opts.subscribeTandemReply ?? (() => () => {}))((sessionId) => {
     if (greeting === null || greeting.phase === "answered") return;
+    if (sessionId !== undefined && !ownChildSessionIds.has(sessionId)) return;
     greeting.phase = "answered";
     greetedThisProcess = true;
+    unsubscribeTandemReply();
     greetingMarker.markDone().catch((err: unknown) => {
       console.error("[Launcher] Could not record that the greeting was sent:", err);
     });
@@ -1227,15 +1236,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
           console.error(`[Launcher] Could not start Claude for the message: ${result.why}`);
         }
       } catch (err) {
-        if (err instanceof LicenseRefusedError) {
-          console.error("[Launcher] Could not start Claude for the message: unlicensed");
-          return;
-        }
-        // A throw from the settings or plan read records nothing on its own;
-        // without this the message would sit unanswered beside a pill that
-        // still offers Start as if nothing had been tried.
-        if (child === null && lastError === undefined) lastError = "spawn-failed";
-        console.error("[Launcher] Could not start Claude for the message:", err);
+        recordStartThrow(err, "Could not start Claude for the message");
       }
     }).finally(() => {
       messageStartQueued = false;
@@ -2661,7 +2662,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // no poll lands on a plain stopped launcher in between; the plan still
         // runs, for `configured` alone — a user with no integration yet reads
         // as not-configured, and this standby decides their chip once the
-        // wizard writes one (`refreshConfigured`).
+        // wizard writes one (`startAfterSetup`, which holds rather than
+        // starts while this standby is set).
         holdInStandby(settings.startMode === "off" ? "off" : "awaiting-start");
         if (settings.startMode === "on-click") armGapWatch();
         console.error(
@@ -3064,13 +3066,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (anotherAiOn()) return decide("other-ai");
       decide("starting");
       console.error("[Launcher] Setup wrote a Claude Code entry — starting Tandem's Claude");
+      // `respawn` reads the plan and settings again under this same lock: a
+      // second read, kept so this start takes respawn's one path rather than
+      // a variant fed from the checks above.
       try {
         await respawn(undefined, undefined, { clearSession: false });
       } catch (err) {
-        if (!(err instanceof LicenseRefusedError) && child === null && lastError === undefined) {
-          lastError = "spawn-failed";
-        }
-        console.error("[Launcher] Starting Claude after setup failed:", err);
+        recordStartThrow(err, "Starting Claude after setup failed");
       }
     }).catch((err: unknown) => {
       // A throw before the decision (the plan or settings read): answer
@@ -3080,6 +3082,22 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       console.error("[Launcher] Starting Claude after setup failed:", err);
     });
     return decision;
+  }
+
+  /**
+   * A start that `respawn` threw out of, for the two starts nobody clicked (a
+   * message, a setup Apply). A licence refusal is already recorded. Any other
+   * throw — the settings or plan read — records nothing on its own, so record
+   * `spawn-failed`: otherwise the pill still offers Start as if nothing had
+   * been tried.
+   */
+  function recordStartThrow(err: unknown, label: string): void {
+    if (err instanceof LicenseRefusedError) {
+      console.error(`[Launcher] ${label}: unlicensed`);
+      return;
+    }
+    if (child === null && lastError === undefined) lastError = "spawn-failed";
+    console.error(`[Launcher] ${label}:`, err);
   }
 
   async function refreshConfigured(): Promise<void> {

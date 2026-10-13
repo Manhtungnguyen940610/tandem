@@ -107,6 +107,14 @@ export function pushSupportNote(
   return targetPushSupport(kind) === "none" ? NO_PUSH_TRANSPORT : null;
 }
 
+/** Readiness's live view of Tandem's Claude, for the done screen's line. */
+export interface TandemClaudeLive {
+  running: boolean;
+  /** `launcherRemedy`: non-null when it is stopped and something would fix it. */
+  remedy: AiRemedy | null;
+  standby: LauncherStandby | null;
+}
+
 /**
  * The done screen's line about Tandem's OWN Claude (#2197; #2180 item 5), or
  * `null` to say nothing (no claude-code entry written, an older server, or an
@@ -121,12 +129,7 @@ export function pushSupportNote(
  */
 export function tandemClaudeDoneCopy(
   initial: TandemClaudeAfterSetup | null,
-  live: {
-    running: boolean;
-    /** `launcherRemedy`: non-null when it is stopped and something would fix it. */
-    remedy: AiRemedy | null;
-    standby: LauncherStandby | null;
-  } | null,
+  live: TandemClaudeLive | null,
 ): string | null {
   if (initial === null || initial === "unknown") return null;
   if (initial === "starting" || initial === "running") {

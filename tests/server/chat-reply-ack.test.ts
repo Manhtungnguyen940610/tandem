@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   appendClaudeChatMessage,
   markUserChatRead,
-  onClaudeChatAppended,
+  onTandemReply,
   REPLY_TO_UNMATCHED_WARNING,
 } from "../../src/server/mcp/awareness.js";
 import { registerChannelRoutes } from "../../src/server/mcp/channel-routes.js";
@@ -53,25 +53,14 @@ describe("appendClaudeChatMessage", () => {
     expect(row(none)).not.toHaveProperty("inProgress");
   });
 
-  it("tells its listeners a message landed (#2197), and a throwing one never fails the write", () => {
+  it("tells no tandem_reply listener (#2197): the channel and local-model writers are not Tandem's Claude", () => {
     const seen = vi.fn();
-    const bad = vi.fn(() => {
-      throw new Error("listener bug");
-    });
-    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const off1 = onClaudeChatAppended(bad);
-    const off2 = onClaudeChatAppended(seen);
+    const off = onTandemReply(seen);
     try {
-      const id = appendedId(appendClaudeChatMessage("hello"));
-      expect(row(id)?.text).toBe("hello");
-      expect(seen).toHaveBeenCalledTimes(1);
-      off2();
-      appendClaudeChatMessage("again");
-      expect(seen).toHaveBeenCalledTimes(1);
+      appendedId(appendClaudeChatMessage("hello"));
+      expect(seen).not.toHaveBeenCalled();
     } finally {
-      off1();
-      off2();
-      errSpy.mockRestore();
+      off();
     }
   });
 
