@@ -412,10 +412,10 @@ function sendNoIntegration(res: Response): void {
  *
  * The `Sec-Fetch-*` headers are forbidden headers: a page cannot set them. A
  * cross-site `<img>` probe (which also sends no `Origin`) says `cross-site`.
- * A SAME-origin `<img>`, iframe or link — which a document opened in the npm
- * build's editor can make, since its CSP allows `img-src 'self'` and
- * root-relative image paths survive sanitizing — says `same-origin` too, so
- * the admission also requires what only a script's `fetch()` sends:
+ * A SAME-origin `<img>` — which a document opened in the npm build's editor
+ * can make, since its CSP allows `img-src 'self'` and root-relative image
+ * paths survive sanitizing — or a link the user clicks says `same-origin`
+ * too, so the admission also requires what only a script's `fetch()` sends:
  * `Sec-Fetch-Dest: empty` with mode `cors` or `same-origin` (measured
  * 2026-10-14: `<img>` is `no-cors`/`image`, an iframe `navigate`/`iframe`, a
  * link `navigate`/`document`). Without that, document content could rotate the
@@ -943,8 +943,10 @@ function makeSettingsPostHandler(deps: LauncherRoutesDeps): Handler {
     // No in-flight 429: writes queue behind the supervisor's lock and the
     // settings module's queue, which is safe, so a second save waits rather
     // than failing.
+    // Read once: the catch must speak for the supervisor that ran the patch,
+    // not one a concurrent Start promoted while this save was failing.
+    const sup = deps.getSupervisor();
     try {
-      const sup = deps.getSupervisor();
       const settings = sup
         ? await sup.updateSettings(parsed.patch)
         : await updateLauncherSettings(deps.settingsBase, parsed.patch);
@@ -952,7 +954,7 @@ function makeSettingsPostHandler(deps: LauncherRoutesDeps): Handler {
     } catch (err) {
       // `updateSettings` stops Claude for an Off even when the save fails, so
       // the answer is "off now, not saved", never "couldn't turn off".
-      if (parsed.patch.startMode === "off" && deps.getSupervisor()) {
+      if (parsed.patch.startMode === "off" && sup) {
         console.error("[Launcher] Turned Tandem's Claude off but could not save it:", err);
         res.status(409).json({
           error: "CONFLICT",
