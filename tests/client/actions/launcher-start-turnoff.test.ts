@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  OFF_NOT_SAVED_MESSAGE,
   startTandemClaude,
   turnOffTandemClaude,
 } from "../../../src/client/actions/builtin.svelte.js";
@@ -25,6 +26,7 @@ import {
   API_LAUNCHER_START,
   API_LAUNCHER_STATUS,
 } from "../../../src/shared/api-paths.js";
+import { LAUNCHER_ERROR_OFF_NOT_SAVED } from "../../../src/shared/launcher/contract.js";
 import { makeActionDeps } from "./deps-bag.js";
 
 const STATUS_URL = `${API_BASE}${API_LAUNCHER_STATUS}`;
@@ -138,6 +140,25 @@ describe("launcher-turn-off / turnOffTandemClaude", () => {
     await until(() => postTo(SETTINGS_URL));
     expect(postTo(SETTINGS_URL)).toEqual({ patch: { startMode: "off" }, nonce: "n-1" });
     expect(confirm).not.toHaveBeenCalled();
+    await until(() => afterLauncherAction.mock.calls.length > 0);
+  });
+
+  it("an Off the server stopped but could not save warns 'off now, not saved' — never 'couldn't turn off'", async () => {
+    status = { available: true, running: true, busy: false };
+    fetchSpy.mockImplementation(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u === STATUS_URL) return jsonResponse(200, status);
+      if (u === NONCE_URL) return jsonResponse(200, { nonce: "n-1" });
+      if (u === SETTINGS_URL) {
+        return jsonResponse(409, { code: LAUNCHER_ERROR_OFF_NOT_SAVED, message: "server copy" });
+      }
+      throw new Error(`unexpected fetch to ${u}`);
+    });
+    turnOffTandemClaude();
+    await until(() => notify.mock.calls.length > 0);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith("warning", OFF_NOT_SAVED_MESSAGE);
+    // It did stop, so the status surfaces re-read.
     await until(() => afterLauncherAction.mock.calls.length > 0);
   });
 

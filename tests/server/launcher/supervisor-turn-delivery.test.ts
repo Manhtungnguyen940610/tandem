@@ -1757,6 +1757,28 @@ describe("#2195 — Start (startByUser)", () => {
     expect(readLauncherSettingsFile().startMode).toBe("on-click");
   });
 
+  it("from off over an unreadable file, keeps the lifetime it last read — on disk and in the child", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "idle", idleMinutes: 1 });
+    const { sup } = makeSupervisor({ idleMinuteMs: 40 });
+    await sup.start();
+    fs.writeFileSync(path.join(baseDir, "launcher-settings.json"), "{ truncated");
+    await sup.startByUser();
+    const child1 = await nthChild(1);
+    expect(readLauncherSettingsFile()).toMatchObject({
+      startMode: "on-click",
+      lifetime: "idle",
+      idleMinutes: 1,
+    });
+    expect(sup.appliedSettings()).toEqual({
+      startMode: "on-click",
+      lifetime: "idle",
+      idleMinutes: 1,
+    });
+    // The child runs by "stop when idle", not the fallback's "always".
+    pushJson(child1, RESULT_OK);
+    await waitFor(() => child1.killed, "the idle stop");
+  });
+
   it("a relaunch from off saves on-click too, so Settings never says Off beside a running Claude", async () => {
     writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
     const { sup } = makeSupervisor();

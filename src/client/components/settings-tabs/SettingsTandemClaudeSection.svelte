@@ -24,6 +24,7 @@ import {
   isLauncherIdleMinutes,
   LAUNCHER_ERROR_IN_PROGRESS,
   LAUNCHER_ERROR_INVALID_NONCE,
+  LAUNCHER_ERROR_OFF_NOT_SAVED,
   LAUNCHER_ERROR_SETTINGS_NEWER,
   LAUNCHER_IDLE_MINUTES_MAX,
   LAUNCHER_IDLE_MINUTES_MIN,
@@ -33,7 +34,11 @@ import {
   type LauncherStartMode,
   parseLauncherSettings,
 } from "../../../shared/launcher/contract";
-import { fetchLauncherStatus, saveLauncherSettings } from "../../actions/builtin.svelte.js";
+import {
+  fetchLauncherStatus,
+  OFF_NOT_SAVED_MESSAGE,
+  saveLauncherSettings,
+} from "../../actions/builtin.svelte.js";
 import { API_BASE } from "../../utils/fileUpload";
 
 const START_MODES: Array<{ value: LauncherStartMode; label: string; hint: string }> = [
@@ -66,6 +71,7 @@ let readOnly = $state(false);
 /** The file could not be read: the controls show what Tandem is doing
  * (waiting for Start), and the first save rewrites the file. */
 let unreadable = $state(false);
+let keptLastGood = $state(false);
 let loadError = $state<string | null>(null);
 let saveError = $state<string | null>(null);
 /** The launcher will not run here at all (stdio, or switched off by the
@@ -87,6 +93,8 @@ let queued: LauncherSettingsPatch | null = null;
 
 function errorForCode(code: string | undefined): string {
   switch (code) {
+    case LAUNCHER_ERROR_OFF_NOT_SAVED:
+      return OFF_NOT_SAVED_MESSAGE;
     case LAUNCHER_ERROR_SETTINGS_NEWER:
       return "These settings were saved by a newer version of Tandem. Update Tandem to change them.";
     case LAUNCHER_ERROR_IN_PROGRESS:
@@ -117,6 +125,7 @@ async function loadSettings(): Promise<void> {
           settings?: unknown;
           readOnly?: unknown;
           unreadable?: unknown;
+          keptLastGood?: unknown;
         } | null)
       : null;
     if (!mounted) return;
@@ -129,6 +138,7 @@ async function loadSettings(): Promise<void> {
     show(parsed);
     readOnly = body?.readOnly === true;
     unreadable = body?.unreadable === true;
+    keptLastGood = unreadable && body?.keptLastGood === true;
   } catch {
     if (mounted) loadError = LOAD_ERROR;
   }
@@ -159,6 +169,10 @@ async function save(patch: LauncherSettingsPatch): Promise<void> {
       saveError = errorForCode(result.code);
       queued = null;
       saving = false;
+      // Claude did stop, so the status bar and chat panel must re-read.
+      if (result.code === LAUNCHER_ERROR_OFF_NOT_SAVED) {
+        window.dispatchEvent(new CustomEvent("tandem:launcher-changed"));
+      }
       // Roll the controls back to what is stored, read fresh rather than
       // trusting the pre-click copy.
       await loadSettings();
@@ -228,8 +242,13 @@ const controlsDisabled = $derived(settings === null || readOnly);
   {/if}
   {#if unreadable}
     <div class="settings-hint" data-testid="settings-modal-tandem-claude-unreadable">
-      Tandem couldn't read its saved settings for its Claude, so it is waiting for you to click
-      Start. Choosing a setting here saves a fresh copy.
+      {#if keptLastGood}
+        Tandem couldn't read its saved settings for its Claude, so it is keeping the ones it last
+        read, shown here. Choosing a setting here saves a fresh copy.
+      {:else}
+        Tandem couldn't read its saved settings for its Claude, so it is waiting for you to click
+        Start. Choosing a setting here saves a fresh copy.
+      {/if}
     </div>
   {/if}
   {#if launcherAbsent}

@@ -402,6 +402,7 @@ describe("POST /api/license/activate is wired to the launcher (#1521)", () => {
         lifetime: "always" as const,
         idleMinutes: 30,
       }),
+      appliedSettings: () => null,
       status: () => ({ running: false as const }),
     };
     const port = await allocPort();

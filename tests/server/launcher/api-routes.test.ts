@@ -20,10 +20,12 @@ import {
   type LauncherRoutesDeps,
   registerLauncherRoutes,
 } from "../../../src/server/launcher/api-routes.js";
+import { SettingsNewerError } from "../../../src/server/launcher/settings.js";
 import type { RespawnResult, Supervisor } from "../../../src/server/launcher/supervisor.js";
 import { TAURI_HOSTNAME } from "../../../src/shared/constants.js";
 import {
   DEFAULT_LAUNCHER_SETTINGS,
+  LAUNCHER_ERROR_OFF_NOT_SAVED,
   LAUNCHER_ERROR_REAPER_NOT_FOUND,
   type LauncherSettings,
   type LauncherSettingsPatch,
@@ -49,6 +51,8 @@ interface FakeSupervisorOpts {
   standby?: LauncherStandby;
   startByUser?: () => Promise<RespawnResult>;
   updateSettings?: (patch: LauncherSettingsPatch) => Promise<LauncherSettings>;
+  /** What the supervisor is acting on (#2195). */
+  appliedSettings?: LauncherSettings | null;
 }
 
 const FAKE_SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -72,6 +76,7 @@ function makeFakeSupervisor(opts: FakeSupervisorOpts = {}): Supervisor {
     startByUser: opts.startByUser ?? (async () => ({ spawned: true })),
     updateSettings:
       opts.updateSettings ?? (async (patch) => ({ ...DEFAULT_LAUNCHER_SETTINGS, ...patch })),
+    appliedSettings: () => opts.appliedSettings ?? null,
     status: () =>
       opts.running
         ? {
@@ -863,6 +868,7 @@ describe("loopback vs LAN redaction for running:false (T6)", () => {
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
       updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
+      appliedSettings: () => null,
       status: () => ({ running: false, lastError: "spawn-failed" as const }),
     };
     const { app: appLoop } = makeApp(baseDeps(sup));
@@ -907,6 +913,7 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
       updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
+      appliedSettings: () => null,
       status: () => {
         throw new Error("simulated supervisor crash");
       },
@@ -932,6 +939,7 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
       updateSettings: async () => DEFAULT_LAUNCHER_SETTINGS,
+      appliedSettings: () => null,
       status: () => {
         throw new Error("simulated");
       },
@@ -1544,6 +1552,27 @@ describe("GET /api/launcher/settings (#2195)", () => {
     const { app } = makeApp(deps);
     const res = await request(app, "GET", "/api/launcher/settings");
     expect(res.body).toMatchObject({ unreadable: true, settings: { startMode: "on-click" } });
+    expect(res.body).not.toHaveProperty("keptLastGood");
+  });
+
+  it("an unreadable file shows what the supervisor is acting on, not the fallback", async () => {
+    const applied = { startMode: "auto", lifetime: "idle", idleMinutes: 10 } as const;
+    const deps = baseDeps(makeFakeSupervisor({ appliedSettings: applied }));
+    fs.writeFileSync(path.join(deps.settingsBase, "launcher-settings.json"), "{ truncated");
+    const { app } = makeApp(deps);
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.body).toEqual({ settings: applied, unreadable: true, keptLastGood: true });
+  });
+
+  it("a readable file is answered from the file, whatever the supervisor last read", async () => {
+    const deps = baseDeps(
+      makeFakeSupervisor({
+        appliedSettings: { startMode: "auto", lifetime: "idle", idleMinutes: 10 },
+      }),
+    );
+    const { app } = makeApp(deps);
+    const res = await request(app, "GET", "/api/launcher/settings");
+    expect(res.body).toEqual({ settings: DEFAULT_LAUNCHER_SETTINGS });
   });
 });
 
@@ -1636,6 +1665,27 @@ describe("POST /api/launcher/settings (#2195)", () => {
     );
     expect(res.status).toBe(400);
     expect(calls).toBe(0);
+  });
+
+  it("an Off that stopped Claude but could not be saved says so, not 'couldn't turn off'", async () => {
+    const sup = makeFakeSupervisor({
+      updateSettings: async () => {
+        throw new SettingsNewerError();
+      },
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { startMode: "off" },
+    });
+    expect(res.status).toBe(409);
+    expect((res.body as { code: string }).code).toBe(LAUNCHER_ERROR_OFF_NOT_SAVED);
+    // Any other patch that fails to save is the plain refusal.
+    const other = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { lifetime: "idle" },
+    });
+    expect((other.body as { code: string }).code).toBe("LAUNCHER_SETTINGS_NEWER");
   });
 
   it("answers 409 rather than overwriting a file a newer Tandem wrote", async () => {
@@ -1792,9 +1842,28 @@ describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () =>
     });
   }
 
+  // What Chromium sends for a script's same-origin `fetch()` (measured 2026-10-14).
+  const sameOriginFetch = {
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+  };
+
   it("issues one for a same-origin GET, which carries no Origin (the npm build's editor)", async () => {
     const { app } = makeApp(baseDeps(makeFakeSupervisor()));
-    expect(await nonceWith(app, { "Sec-Fetch-Site": "same-origin" })).toBe(200);
+    expect(await nonceWith(app, sameOriginFetch)).toBe(200);
+  });
+
+  // A document opened in the npm build's editor can make the app load its own
+  // origin (CSP `img-src 'self'`); none of these may rotate the nonce.
+  it.each([
+    ["a same-origin <img>", { "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image" }],
+    ["a same-origin iframe", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe" }],
+    ["a same-origin link", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" }],
+    ["a same-origin GET with no mode or destination", {}],
+  ])("refuses %s, which also carries no Origin", async (_l, rest) => {
+    const { app } = makeApp(baseDeps(makeFakeSupervisor()));
+    expect(await nonceWith(app, { "Sec-Fetch-Site": "same-origin", ...rest })).toBe(403);
   });
 
   it("still refuses a cross-site request with no Origin (an <img> probe cannot rotate it)", async () => {
@@ -1805,8 +1874,6 @@ describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () =>
 
   it("still refuses a foreign Origin, whatever Sec-Fetch-Site says", async () => {
     const { app } = makeApp(baseDeps(makeFakeSupervisor()));
-    expect(
-      await nonceWith(app, { Origin: "https://evil.example", "Sec-Fetch-Site": "same-origin" }),
-    ).toBe(403);
+    expect(await nonceWith(app, { Origin: "https://evil.example", ...sameOriginFetch })).toBe(403);
   });
 });

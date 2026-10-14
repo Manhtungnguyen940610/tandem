@@ -1919,6 +1919,11 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
     });
   });
 
+  /**
+   * #1521: the licence refusal ranks FIRST. Solo is a privacy choice, the
+   * refusal is a capability fact, and every other CTA would be refused by the
+   * server. Once it clears, an `unlicensed` lastError maps back to Restart.
+   */
   describe("licence refusal (aiNotice)", () => {
     const stoppedWith = (lastError?: string) => () =>
       mkResponse({ available: true, running: false, ...(lastError ? { lastError } : {}) });
