@@ -812,6 +812,7 @@ describe("pushEvent records which inbox item a forward waits on", () => {
         replyAuthor: "user",
         replyText: "hi",
         textSnippet: "",
+        parentAuthor: "claude",
       },
     });
 

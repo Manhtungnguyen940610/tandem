@@ -518,3 +518,36 @@ describe("applyAiRefusal", () => {
     expect(applyAiRefusal(detached, () => false)).toBe(detached);
   });
 });
+
+describe("a held round is re-timed to its oldest undelivered item (PR #2225 review)", () => {
+  it("records the delivered part's latency and restarts the clock at the held item", () => {
+    const T0 = 50_000;
+    recordWakeForward(T0, { documentId: "doc-ok", itemId: "ann-ok" });
+    recordWakeForward(T0 + 10, { documentId: "doc-bad", itemId: "ann-held" });
+    resolveDeliveryRound(T0 + 20, { documents: new Set(["doc-bad"]), items: new Set() });
+
+    const held = getDeliveryState(T0 + 30, 1);
+    expect(held.state).toBe("awaiting-poll");
+    // Waiting since the held item's own forward, not the round's first.
+    expect(held.waitingMs).toBe(20);
+
+    // A later forward the next poll delivers does not extend the held wait.
+    recordWakeForward(T0 + 40, { documentId: "doc-ok", itemId: "ann-later" });
+    resolveDeliveryRound(T0 + 50, { documents: new Set(["doc-bad"]), items: new Set() });
+    expect(getDeliveryState(T0 + 50, 1).waitingMs).toBe(40);
+
+    resolveDeliveryRound(T0 + 60);
+    const closed = getDeliveryState(T0 + 60, 1);
+    expect(closed.state).toBe("polled");
+    // Measured from the held item's own forward (T0 + 10), not the round's first.
+    expect(closed.latencyMs).toBe(50);
+  });
+
+  it("a re-forward of the same item keeps its first forward time", () => {
+    const T0 = 90_000;
+    recordWakeForward(T0, { documentId: "doc-a", itemId: "ann-1" });
+    recordWakeForward(T0 + 100, { documentId: "doc-a", itemId: "ann-1" });
+    resolveDeliveryRound(T0 + 150, { documents: new Set(["doc-a"]), items: new Set() });
+    expect(getDeliveryState(T0 + 150, 1).waitingMs).toBe(150);
+  });
+});

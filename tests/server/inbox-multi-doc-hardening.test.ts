@@ -238,10 +238,13 @@ describe("C: a malformed record is left out, not the whole poll", () => {
   it("never counts a record a privacy gate already withheld", async () => {
     // admit runs AFTER the gates, so a private or Solo-held record — malformed
     // or not — is never counted, and its existence never reaches the summary.
+    // Polled in TANDEM first: in Solo the hold masks every user record, so a
+    // regression that moved admit above the audience/note gate would pass.
+    setCtrlMode("tandem");
     captureStderr();
     const doc = openDoc("hard-c-private", "Private document text", { active: true });
     userComment(doc, "u_private_bad", { audience: "private", content: 42 });
-    withInternal(doc, () =>
+    withInternal(doc, () => {
       doc.getMap(Y_MAP_ANNOTATIONS).set("n_bad", {
         id: "n_bad",
         author: "user",
@@ -251,14 +254,28 @@ describe("C: a malformed record is left out, not the whole poll", () => {
         content: 42,
         status: "pending",
         timestamp: 1,
-      }),
-    );
+      });
+      // A malformed reply inside the note's thread: channelVisibleReplies
+      // refuses note threads before admit can see it.
+      doc.getMap(Y_MAP_ANNOTATION_REPLIES).set("r_note_bad", {
+        id: "r_note_bad",
+        annotationId: "n_bad",
+        author: "user",
+        text: 42,
+        timestamp: 2,
+      });
+    });
+
+    const tandem = await poll();
+    expect(tandem.summary).not.toContain("could not be returned");
+    expect(tandem.summary).toBe("No new actions.");
+
+    // And the Solo hold, separately: a malformed outbound comment held in Solo
+    // is not counted either.
     setCtrlMode("solo");
     userComment(doc, "u_solo_bad", { content: 42 });
-
-    const data = await poll();
-    expect(data.summary).not.toContain("could not be returned");
-    expect(data.summary).toBe("No new actions.");
+    const solo = await poll();
+    expect(solo.summary).not.toContain("could not be returned");
   });
 
   it("logs no record content and no unprintable id", async () => {
@@ -563,7 +580,7 @@ describe("E: the delivery round stays open while its item was not handed over", 
     expect(getDeliveryState(Date.now(), 1).state).toBe("polled");
   });
 
-  it("a refused record holds only the round waiting on it", async () => {
+  it("a refused record does not hold the round: the summary reported it", async () => {
     setCtrlMode("tandem");
     captureStderr();
     const doc = openDoc("hard-e-drop", "Background drop text", { active: true });
@@ -577,11 +594,14 @@ describe("E: the delivery round stays open while its item was not handed over", 
     expect(first.userActions.map((a) => a.id)).toEqual(["u_e_ok"]);
     expect(getDeliveryState(Date.now(), 1).state).toBe("polled");
 
-    // Now the forward IS for a malformed record: the round waits on it.
+    // The forward IS for a malformed record. The poll reports it as a drop
+    // and closes the round: holding it would pin `awaiting-poll` for as long
+    // as the record stays malformed, i.e. for the life of the process.
     browserComment(doc, "u_e_bad", { content: 42 });
     expect(getDeliveryState(Date.now(), 1).state).toBe("awaiting-poll");
-    await poll();
-    expect(getDeliveryState(Date.now(), 1).state).toBe("awaiting-poll");
+    const second = await poll();
+    expect(second.summary).toContain("could not be returned");
+    expect(getDeliveryState(Date.now(), 1).state).toBe("polled");
   });
 });
 

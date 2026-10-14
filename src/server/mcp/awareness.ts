@@ -15,11 +15,7 @@ import { generateMessageId } from "../../shared/utils.js";
 import { isClaudeFacing } from "../annotations/projection.js";
 import { isStoreReadOnly } from "../annotations/store.js";
 import { clearStreamStaleness, noteStreamSidecar } from "../chat-stream-staleness.js";
-import {
-  deliveryItemKey,
-  recordInboxPoll,
-  resolveDeliveryRound,
-} from "../events/delivery-state.js";
+import { recordInboxPoll, resolveDeliveryRound } from "../events/delivery-state.js";
 import { getAnnotationEditedChannelKey, wasEmittedViaChannelInDocument } from "../events/queue.js";
 import { type AiRefusal, aiRefusal } from "../license/ai-refusal.js";
 import {
@@ -843,8 +839,6 @@ interface InboxDocumentsPass extends DocumentInbox {
   unreadable: string[];
   /** Per document, how many items `admit` refused (PR #2225 review). */
   dropped: Map<string, number>;
-  /** The delivery-round keys (`deliveryItemKey`) of those refused items. */
-  droppedItemKeys: string[];
   /**
    * Apply every read document's staged ledger writes and quiet-skip records.
    * Call only once the whole response has validated.
@@ -893,7 +887,6 @@ function collectInboxDocuments(
     readAnyDocument: false,
     unreadable: [],
     dropped: new Map(),
-    droppedItemKeys: [],
     commit: () => {
       for (const commit of commits) commit();
     },
@@ -902,12 +895,12 @@ function collectInboxDocuments(
     const isActivityDocument = id === activityDocumentId;
     // Refusals are merged into the pass only if this document's pass returns:
     // one that throws is reported as unreadable, whole.
-    const refusedKeys: string[] = [];
+    let refused = 0;
     const admit: InboxPollContext["admit"] = (bucket, item) => {
       const checked = INBOX_BUCKET_SCHEMAS[bucket].safeParse(item);
       if (checked.success) return true;
       logInboxDrop(`document ${id}`, `${bucket} item`, item, checked.error.issues);
-      refusedKeys.push(deliveryItemKey(id, item.id));
+      refused += 1;
       return false;
     };
     let inbox: ReturnType<typeof collectDocumentInbox>;
@@ -936,7 +929,7 @@ function collectInboxDocuments(
         const fixedPoint =
           outsideTransaction && ydoc._transaction === null && state.epoch === epochBefore;
         const record: QuietRecord | null =
-          fixedPoint && produced === 0 && refusedKeys.length === 0
+          fixedPoint && produced === 0 && refused === 0
             ? { epoch: epochBefore, mode: modeState, ledgerGeneration }
             : null;
         commitQuiet = () => {
@@ -962,9 +955,8 @@ function collectInboxDocuments(
     pass.userActions.push(...inbox.userActions);
     pass.userResponses.push(...inbox.userResponses);
     pass.userReplies.push(...inbox.userReplies);
-    if (refusedKeys.length > 0) {
-      pass.dropped.set(id, refusedKeys.length);
-      pass.droppedItemKeys.push(...refusedKeys);
+    if (refused > 0) {
+      pass.dropped.set(id, refused);
     }
     if (isActivityDocument) pass.activity = inbox.activity;
   }
@@ -1315,15 +1307,17 @@ export function registerAwarenessTools(server: McpServer): void {
         chat.markRead();
         // The join closes only now, once what was returned is committed — a
         // claim about the USER's message, kept apart from the poll stamp above.
-        // It stays OPEN when this poll could not hand over an item the round is
-        // waiting on: a document isolated as unreadable, or a record `admit`
-        // refused. A refused chat, or the Solo release wake, names no such item
-        // and closes it as before. The round is process-wide, so a poll naming
+        // It stays OPEN while a document the round is waiting on could not be
+        // read at all; that held round is re-timed to its oldest item still
+        // undelivered (`resolveDeliveryRound`). A record `admit` refused does
+        // NOT hold it: the summary just told Claude about it, and holding would
+        // leave a permanently malformed record pinning the round at
+        // `awaiting-poll` for the life of the process (PR #2225 review). The round is process-wide, so a poll naming
         // a different document still closes one whose forward was elsewhere —
         // `polled` was never proof that that annotation was delivered.
         resolveDeliveryRound(Date.now(), {
           documents: new Set(docs.unreadable),
-          items: new Set(docs.droppedItemKeys),
+          items: new Set(),
         });
 
         return mcpStructured(response);

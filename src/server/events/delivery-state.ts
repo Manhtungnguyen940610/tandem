@@ -107,9 +107,13 @@ let lastLatencyMs: number | null = null;
  * permanently malformed record does not hold every later round open.
  *
  * Cleared with the round — on resolve, on a fresh round after an abandoned one,
- * and on reset — so it never outlives the `pendingSince` it describes.
+ * and on reset — so it never outlives the `pendingSince` it describes. Each
+ * entry keeps its own forward time, so a round that a poll holds is re-timed to
+ * the oldest item still undelivered rather than to the first forward of the
+ * round: later forwards that a poll DID deliver neither extend the wait nor
+ * hide behind the held item's clock.
  */
-const pendingItems = new Map<string, string>();
+const pendingItems = new Map<string, { documentId: string; forwardedAt: number }>();
 
 /** One inbox item a forward is waiting on: its document and its annotation or reply id. */
 export interface PendingDeliveryItem {
@@ -223,11 +227,20 @@ export function resolveDeliveryRound(
   if (pendingSince === null) return;
   if (undelivered) {
     const held = [...pendingItems].filter(
-      ([key, documentId]) => undelivered.documents.has(documentId) || undelivered.items.has(key),
+      ([key, entry]) => undelivered.documents.has(entry.documentId) || undelivered.items.has(key),
     );
     if (held.length > 0) {
+      // Everything older than the oldest held item was delivered by this poll,
+      // so that much of the round is a completed forward→poll interval; record
+      // it, then restart the clock at the oldest item still undelivered.
+      const oldestHeld = Math.min(...held.map(([, entry]) => entry.forwardedAt));
+      if (oldestHeld > pendingSince) {
+        lastLatencyMs = pendingAbandoned ? null : Math.max(0, now - pendingSince);
+        pendingAbandoned = false;
+      }
+      pendingSince = Math.max(pendingSince, oldestHeld);
       pendingItems.clear();
-      for (const [key, documentId] of held) pendingItems.set(key, documentId);
+      for (const [key, entry] of held) pendingItems.set(key, entry);
       return;
     }
   }
@@ -268,7 +281,13 @@ export function recordWakeForward(now: number = Date.now(), item?: PendingDelive
   } else {
     pendingSince ??= now;
   }
-  if (item) pendingItems.set(deliveryItemKey(item.documentId, item.itemId), item.documentId);
+  if (item) {
+    const key = deliveryItemKey(item.documentId, item.itemId);
+    // The FIRST forward of an item is when it started waiting; a re-forward of
+    // the same item (an edit, say) must not reset that.
+    if (!pendingItems.has(key))
+      pendingItems.set(key, { documentId: item.documentId, forwardedAt: now });
+  }
 }
 
 /**
