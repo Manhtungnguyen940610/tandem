@@ -19,7 +19,7 @@
  * is the render, and a real probe would fetch `/health`.
  */
 
-import { cleanup, render, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -99,6 +99,7 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), async (imp
     },
     keepSetup: keepSetupSpy,
     pickedForInstall: vi.fn(() => null),
+    refreshDetected: vi.fn(async () => []),
     get picked() {
       return wizardStub.picked;
     },
@@ -873,6 +874,33 @@ describe("IntegrationWizardModal — Tandem's own Claude on the done screen (#21
     await tick();
     expect(q(container, "integration-wizard-tandem-claude")).toBeNull();
   });
+
+  it("a sign-in stop shows the sign-in step and a Check sign-in through the remedy dispatcher (#2199)", async () => {
+    wizardStub.picked = [pickedCode()];
+    wizardStub.applyResults = [applied("claude-code-1")];
+    wizardStub.tandemClaude = "starting";
+    const onLauncherRemedy = vi.fn();
+    const { container, rerender } = render(IntegrationWizardModal, {
+      props: { open: true, onClose: vi.fn(), tandemClaudeLive: null, onLauncherRemedy },
+    });
+    await tick();
+    // Not while the start is still under way: Check would relaunch over it.
+    expect(q(container, "integration-wizard-check-sign-in")).toBeNull();
+    await rerender({
+      open: true,
+      onClose: vi.fn(),
+      onLauncherRemedy,
+      tandemClaudeLive: { running: false, remedy: "sign-in", standby: null },
+    });
+    await tick();
+    expect(q(container, "integration-wizard-tandem-claude")?.textContent).toContain(
+      "sign in to Claude Code",
+    );
+    const check = q(container, "integration-wizard-check-sign-in");
+    expect(check).not.toBeNull();
+    await fireEvent.click(check as HTMLElement);
+    expect(onLauncherRemedy).toHaveBeenCalledWith("sign-in");
+  });
 });
 
 describe("IntegrationWizardModal — the v1.0 walkthrough (#2198)", () => {
@@ -917,8 +945,27 @@ describe("IntegrationWizardModal — the v1.0 walkthrough (#2198)", () => {
     return { ...r, onClose, onWalkthroughKept };
   }
 
+  it("a user with a setup who ticks something new: Connect leads, Keep steps back (#2199)", async () => {
+    wizardStub.hasSetupToKeep = true;
+    // Not from the saved setup, and no Tandem entry on disk yet.
+    wizardStub.picked = [pickedCode()];
+    const { container } = mountWalkthrough();
+    await tick();
+    expect(q(container, "integration-wizard-keep-setup")?.className).toContain("iw-btn-secondary");
+    expect(q(container, "integration-wizard-connect-btn")?.className).toContain("iw-btn-primary");
+  });
+
+  it("the start choice follows a TICKED Claude Code card, not a detected one (#2199)", async () => {
+    wizardStub.picked = [];
+    const { container } = mountWalkthrough();
+    await tick();
+    expect(q(container, "integration-wizard-start-mode")).toBeNull();
+  });
+
   it("a user with a setup: Keep this setup is the primary action, with the walkthrough copy", async () => {
     wizardStub.hasSetupToKeep = true;
+    // The pre-fill: the card is the saved setup, not a new pick.
+    wizardStub.picked = [{ ...pickedCode(), fromRecord: true }];
     const { container } = mountWalkthrough();
     await tick();
     const keep = q(container, "integration-wizard-keep-setup");

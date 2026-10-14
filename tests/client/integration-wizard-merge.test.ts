@@ -11,6 +11,7 @@ import {
   isSomethingSetUp,
   type MergePicked,
   matchRecord,
+  picksSomethingNew,
   preselects,
   recordToConfig,
 } from "../../src/client/hooks/integration-wizard-merge";
@@ -70,6 +71,30 @@ const cardFrom = (install: ExistingMcpInstall, record: IntegrationConfig): Merge
   id: record.id,
   config: recordToConfig(install, record),
   fromRecord: true,
+});
+
+describe("picksSomethingNew (#2199)", () => {
+  const valid = ccInstall("/home/u/.claude.json", {
+    tandemEntry: { type: "http", url: "http://127.0.0.1:3479/mcp" },
+    tandemValidation: { status: "valid" },
+  } as Partial<ExistingMcpInstall>);
+  const fresh = (path: string): MergePicked => ({
+    id: "new-1",
+    config: {
+      ...ccRecord({ id: "new-1", configPath: path }),
+      apply: undefined,
+    } as IntegrationConfig,
+  });
+
+  it("the saved setup, or what is already set up on disk, is not new", () => {
+    expect(picksSomethingNew([cardFrom(ccInstall(), ccRecord())], [ccInstall()])).toBe(false);
+    expect(picksSomethingNew([fresh("/home/u/.claude.json")], [valid])).toBe(false);
+  });
+
+  it("a ticked card with no Tandem entry on disk is new — matched case- and separator-folded", () => {
+    expect(picksSomethingNew([fresh("/home/u/.claude.json")], [ccInstall()])).toBe(true);
+    expect(picksSomethingNew([fresh("\\HOME\\u\\.claude.json")], [valid])).toBe(false);
+  });
 });
 
 describe("matchRecord", () => {

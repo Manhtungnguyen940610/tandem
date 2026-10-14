@@ -133,6 +133,7 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), () => ({
     keepError: null,
     keepSetup: vi.fn(async () => true),
     pickedForInstall: vi.fn(() => null),
+    refreshDetected: vi.fn(async () => []),
   }),
   detectedToPicked: vi.fn(() => null),
 }));

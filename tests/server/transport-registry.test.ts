@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CLAUDE_DESKTOP_CLIENT_NAME,
   type ClosableServer,
   countDistinctClients,
   createMcpSessionRegistry,
@@ -7,6 +8,7 @@ import {
   hasLiveEntryOtherThan,
   isLiveEntry,
   LIVE_RECENT_MS,
+  readClientName,
 } from "../../src/server/mcp/transport-registry.js";
 
 /** Minimal stand-in for an McpServer — the registry only ever calls close(). */
@@ -392,6 +394,27 @@ describe("isLiveEntry", () => {
   });
 });
 
+describe("readClientName (#2199)", () => {
+  const init = (name: unknown) => ({ params: { clientInfo: { name } } });
+
+  it("reads a printable clientInfo name", () => {
+    expect(readClientName(init("claude-ai"))).toBe("claude-ai");
+  });
+
+  it.each([
+    ["absent", {}],
+    ["not a string", init(42)],
+    ["empty", init("")],
+    ["over 64", init("x".repeat(65))],
+    ["a newline (log forging)", init("claude-ai\n[Tandem] forged line")],
+    ["an ANSI escape", init("\u001b[31mred")],
+    ["a C1 control", init("a\u009bb")],
+    ["null", null],
+  ])("drops %s, rather than trimming it", (_l, body) => {
+    expect(readClientName(body)).toBeUndefined();
+  });
+});
+
 describe("hasLiveEntryOtherThan (#2196)", () => {
   const OWN = "11111111-1111-4111-8111-111111111111";
   const OTHER = "22222222-2222-4222-8222-222222222222";
@@ -429,6 +452,27 @@ describe("hasLiveEntryOtherThan (#2196)", () => {
   it("a live entry with no Claude session id is someone else", () => {
     expect(
       hasLiveEntryOtherThan([{ claudeSessionId: undefined, ...recent }], new Set([OWN]), NOW),
+    ).toBe(true);
+  });
+
+  it("Claude Desktop (no push, so it does not answer the chat) is not another AI (#2199)", () => {
+    expect(
+      hasLiveEntryOtherThan(
+        [{ claudeSessionId: undefined, clientName: CLAUDE_DESKTOP_CLIENT_NAME, ...streaming }],
+        new Set([OWN]),
+        NOW,
+      ),
+    ).toBe(false);
+    // Beside a live client of any other name, that one still counts.
+    expect(
+      hasLiveEntryOtherThan(
+        [
+          { claudeSessionId: undefined, clientName: CLAUDE_DESKTOP_CLIENT_NAME, ...streaming },
+          { claudeSessionId: OTHER, clientName: "claude-code", ...recent },
+        ],
+        new Set([OWN]),
+        NOW,
+      ),
     ).toBe(true);
   });
 

@@ -10,6 +10,7 @@ import { AI_CTA } from "../hooks/useAiReadiness.svelte";
 import { flatOffsetToPmPos } from "../positions";
 import { agentColor } from "../utils/agent-color";
 import { AI_OFF_TITLE } from "../utils/license-ui";
+import { CLAUDE_CODE_OFFER_TEXT, showClaudeCodeOffer } from "./chat-claude-code-offer";
 import { localChatDateLabel } from "./chat-export";
 import { GREETING_LATE_TEXT, GREETING_RELAUNCH, type GreetingAction } from "./chat-greeting";
 import { renderMarkdown } from "./chat-markdown";
@@ -74,6 +75,15 @@ interface Props {
   tandemClaudeGreetingLate: GreetingAction | null;
   onGreetingAction: (action: GreetingAction) => void;
   /**
+   * The offer to set up Tandem's own Claude (#2199; `chat-claude-code-offer.ts`)
+   * may show — App's `claudeCodeOfferEligible`. The panel adds WHEN: an empty
+   * chat, or a message left waiting past the stall threshold. Required, with
+   * its two handlers, for the same PanelSlot reason as `tandemClaudeControl`.
+   */
+  claudeCodeOfferEligible: boolean;
+  onClaudeCodeOfferSetup: () => void;
+  onClaudeCodeOfferDismiss: () => void;
+  /**
    * The licence refuses the AI (#1521). Disables the composer and send; the
    * history stays fully readable. Required, with no default, so a mount that
    * forgets it fails to compile rather than fail open.
@@ -104,6 +114,9 @@ let {
   onResumeRemedy,
   tandemClaudeGreetingLate,
   onGreetingAction,
+  claudeCodeOfferEligible,
+  onClaudeCodeOfferSetup,
+  onClaudeCodeOfferDismiss,
   aiDisabled,
 }: Props = $props();
 
@@ -153,6 +166,10 @@ const pickup = $derived(
     : chatPickup(messages, Math.max(now, Date.now())),
 );
 const pickupKind = $derived(pickup?.kind ?? null);
+// Beside the pickup row, not instead of it: "still waiting" stays true.
+const claudeCodeOffer = $derived(
+  showClaudeCodeOffer(claudeCodeOfferEligible, messages.length, pickup),
+);
 // The primitive, for the scroll effect: `chatResume` returns a new object on
 // every recompute, and an effect reading the object would scroll a reader who
 // scrolled up back down on a change that moved nothing.
@@ -180,7 +197,13 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
-  const kind = resumeKind ?? (greetingLateShown ? "greeting" : pickupKind);
+  // Read up front, not inside the chain: while the pickup row reads
+  // "waiting" the chain would short-circuit past it, and the offer row that
+  // joins it at the stall threshold would land below the fold.
+  const offer = claudeCodeOffer;
+  let kind: string | null = resumeKind;
+  if (kind === null && greetingLateShown) kind = "greeting";
+  kind ??= pickupKind ?? (offer ? "offer" : null);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -578,6 +601,37 @@ async function exportChat() {
         <span>{chatPickupLabel(pickup)}</span>
       </div>
     {/if}
+    {#if claudeCodeOffer}
+      <!-- NOT aria-hidden (#2199): unlike the status rows above, it holds its
+           own buttons, so it must stay reachable in place. Its text is ALSO
+           announced through the live region below when it appears, so a
+           screen-reader user hears that it arrived. -->
+      <div
+        class="chat-status-row chat-status-row-wrap"
+        data-testid="chat-claude-code-offer"
+        style="color: var(--tandem-fg-muted);"
+      >
+        <span>{CLAUDE_CODE_OFFER_TEXT}</span>
+        <button
+          type="button"
+          class="chat-header-action"
+          data-testid="chat-claude-code-offer-setup"
+          title="Open setup to install and connect Claude Code for Tandem's own Claude"
+          onclick={onClaudeCodeOfferSetup}
+        >
+          Set up…
+        </button>
+        <button
+          type="button"
+          class="chat-header-action"
+          data-testid="chat-claude-code-offer-dismiss"
+          title="Hide this until Tandem next starts"
+          onclick={onClaudeCodeOfferDismiss}
+        >
+          Not now
+        </button>
+      </div>
+    {/if}
     <!-- Announcer, not host: the row is a gapped flex item that comes and goes.
          Keyed on the kind only, so the ticking seconds are never read out. -->
     <LiveRegion
@@ -586,7 +640,9 @@ async function exportChat() {
         ? chatResumeLabel(tandemClaudeResume)
         : tandemClaudeGreetingLate
           ? GREETING_LATE_TEXT
-          : chatPickupAnnouncement(pickupKind)}
+          : claudeCodeOffer
+            ? CLAUDE_CODE_OFFER_TEXT
+            : chatPickupAnnouncement(pickupKind)}
       data-testid="chat-pickup-live"
     />
     <div bind:this={messagesEndEl}></div>

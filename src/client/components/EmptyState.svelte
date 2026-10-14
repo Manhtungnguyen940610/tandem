@@ -171,13 +171,12 @@ $effect(() => {
         >
           Set up Claude Code
         </button>
-        <!-- The probe can be wrong — it looks for a `claude` on PATH, so an
-             install under another name reads as absent — and a branch offering
-             one CTA that might not apply is a dead end. Deliberately modest
-             copy: this retries a spawn, it does NOT help someone who installed
-             the CLI after Tandem started, because the supervisor spawns from
-             the PATH this process was launched with. That case needs a Tandem
-             restart, which is what the wizard's own banner says. -->
+        <!-- The probe can be wrong — it looks for a `claude` on PATH and in
+             `~/.local/bin`, so an install under another name or elsewhere reads
+             as absent — and a branch offering one CTA that might not apply is
+             a dead end. This retries a start, which resolves the command
+             afresh (#2199), so it also picks up a native install made since
+             Tandem started. -->
         <button
           class="empty-link"
           data-testid="empty-state-setup-restart-anyway"

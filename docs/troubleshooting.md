@@ -110,9 +110,9 @@ native installer drops a real `claude.exe`, which both terminals and Tandem can 
 install method is deprecated.) Alternatively, set `TANDEM_CLAUDE_CMD` to the full path of a
 `.exe`.
 
-**Restart Tandem after installing.** The launcher searches the PATH Tandem started with, so a
-CLI installed while Tandem is running stays invisible to it — and the old wrapper keeps
-winning — until the restart.
+**No Tandem restart is needed.** The launcher looks in the native installer's location
+(`~/.local/bin`) as well as the PATH Tandem started with, so the next Start finds the new
+`claude.exe` even though the old wrapper is still on PATH (#2199).
 
 `tandem doctor` names this state explicitly — a warning that the CLI on PATH is a wrapper
 Tandem's launcher can't start — and the integration wizard shows the same warning. Launching
@@ -125,11 +125,13 @@ supervisor which kind of failure it was: the CLI being missing or unstartable, o
 fine and crashing for some other reason (a stale saved conversation, an expired login, a plugin
 that fails on load). Only the first routes you to the setup wizard.
 
-That check looks for a `claude` on the PATH Tandem itself started with, so it can be wrong in two
-ways. If you installed Claude Code under a different name, use **Restart Claude anyway** on the
-empty-state screen, or run **Relaunch Claude in this folder** from the command palette
-(`Ctrl+Shift+P`). If you installed it *after* opening Tandem, restart Tandem — a running process
-cannot see a PATH change made after it launched.
+That check looks for a `claude` on the PATH Tandem itself started with and in the native
+installer's `~/.local/bin`, so it can be wrong when Claude Code is installed under a different
+name or somewhere else: then use **Restart Claude anyway** on the empty-state screen, or run
+**Relaunch Claude in this folder** from the command palette (`Ctrl+Shift+P`), or set
+`TANDEM_CLAUDE_CMD` to its full path. A native install made *after* opening Tandem is found by
+the next Start; a PATH change of any other kind still needs a Tandem restart, because a running
+process cannot see it.
 
 If Claude keeps stopping with a healthy install, the CTA says "Restart Claude Code" instead —
 except for one cause Tandem now recognises and names:

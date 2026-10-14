@@ -1767,6 +1767,32 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       expect(h.get().state).toBe("unconfigured");
       expect(h.get().chip).toBe("connect");
     });
+
+    it("launcherNotConfigured holds while a Claude Desktop session is live (#2199)", async () => {
+      // A live session makes `state` read "ready" before it ever reaches
+      // "unconfigured" — the reading the chat panel's offer needs must not.
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse({ available: false, reason: "not-configured" }),
+        health: mkResponse({ status: "ok", hasSession: true, sessionCount: 1 }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().state).toBe("ready");
+      expect(h.get().launcherNotConfigured).toBe(true);
+    });
+
+    it.each([
+      ["another unavailable reason", { available: false, reason: "stdio-mode" }],
+      ["a configured launcher", { available: true, running: false }],
+    ])("launcherNotConfigured is false for %s", async (_l, launcherBody) => {
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(launcherBody),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherNotConfigured).toBe(false);
+    });
   });
 
   describe("standby (#2195)", () => {
