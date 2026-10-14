@@ -2080,6 +2080,55 @@ export interface TandemPluginInput {
   enabledPlugins: Record<string, unknown> | null;
   /** Whether `~/.claude.json` carries an `mcpServers.tandem` entry of its own. */
   wizardTandemEntry: boolean;
+  /** Whether `~/.claude.json` also carries `mcpServers["tandem-channel"]`. */
+  wizardChannelEntry: boolean;
+  /** The installed plugin's version from Claude Code's plugin registry, or
+   *  `null` when it could not be read — again not evidence either way. */
+  installedPluginVersion: string | null;
+  /** This build's version (`__TANDEM_VERSION__`), or `null` under tsx/vitest. */
+  bundledVersion: string | null;
+}
+
+/**
+ * The installed version of plugin `key` in Claude Code's
+ * `~/.claude/plugins/installed_plugins.json`, or `null`.
+ *
+ * **The entry shape is read defensively because it is not recorded anywhere in
+ * this repo** (#2192). The parse accepts a list of installs (one per scope) or a
+ * single install object, each carrying a string `version`. Anything else reads
+ * as `null`, which `evaluateTandemPlugin` treats as "unknown" and stays silent
+ * on — so a format change fails toward saying nothing, never toward a false
+ * warning. With several installs the OLDEST is returned: any stale one is what
+ * loads stale code in the scope it covers.
+ */
+export function pluginVersionFromRegistry(registry: unknown, key: string): string | null {
+  if (typeof registry !== "object" || registry === null) return null;
+  const plugins = (registry as { plugins?: unknown }).plugins;
+  if (typeof plugins !== "object" || plugins === null || !Object.hasOwn(plugins, key)) {
+    return null;
+  }
+  const entry = (plugins as Record<string, unknown>)[key];
+  const installs = Array.isArray(entry) ? entry : [entry];
+  let oldest: string | null = null;
+  for (const install of installs) {
+    if (typeof install !== "object" || install === null) continue;
+    const version = (install as { version?: unknown }).version;
+    if (typeof version !== "string" || !/^\d+\.\d+\.\d+/.test(version)) continue;
+    if (oldest === null || isOlderVersion(version, oldest)) oldest = version;
+  }
+  return oldest;
+}
+
+/** `a < b` on the leading numeric triplet; `false` when either is unparseable. */
+function isOlderVersion(a: string, b: string): boolean {
+  // `parseNodeVersion` is a plain prefix-anchored triplet parser; the name is
+  // historical, nothing in it is Node-specific.
+  const pa = parseNodeVersion(a);
+  const pb = parseNodeVersion(b);
+  if (pa === null || pb === null) return false;
+  if (pa.major !== pb.major) return pa.major < pb.major;
+  if (pa.minor !== pb.minor) return pa.minor < pb.minor;
+  return pa.patch < pb.patch;
 }
 
 /**
@@ -2171,6 +2220,31 @@ export function evaluateTandemPlugin(input: TandemPluginInput): EvalOutcome[] {
     },
   ];
 
+  // #2192: the manifest hard-pins `tandem-editor@<version>` (#1790) and Claude
+  // Code does not update an installed plugin by itself, so an old install keeps
+  // running an old bridge and channel shim against this server indefinitely.
+  // Silent when either version is unknown: that is not evidence.
+  const { installedPluginVersion, bundledVersion } = input;
+  if (
+    installedPluginVersion !== null &&
+    bundledVersion !== null &&
+    isOlderVersion(installedPluginVersion, bundledVersion)
+  ) {
+    out.push({
+      status: "warn",
+      message: `The Tandem plugin is pinned to tandem-editor@${installedPluginVersion}, older than this Tandem (${bundledVersion})`,
+      fix:
+        "Plugins do not update themselves, so every Claude Code session runs the plugin's " +
+        `${installedPluginVersion} bridge and channel shim against this ${bundledVersion} server. ` +
+        "Update it from Claude Code's `/plugin` menu, or remove it with " +
+        `\`claude plugin uninstall ${installedKey}\`` +
+        (input.wizardTandemEntry
+          ? " — your ~/.claude.json entries already provide the same tools."
+          : "."),
+      data: { installedPluginVersion, bundledVersion },
+    });
+  }
+
   // Duplication warning only when the wizard's entry is ALSO present — a
   // plugin-only user has nothing duplicated and needs no warning.
   if (input.wizardTandemEntry) {
@@ -2180,7 +2254,12 @@ export function evaluateTandemPlugin(input: TandemPluginInput): EvalOutcome[] {
         "Both the Tandem plugin and a tandem MCP entry in ~/.claude.json are present — the tandem_* tools will appear twice",
       fix:
         "Plugin MCP servers load alongside your own, under a plugin_ prefix. Keep one: " +
-        `\`claude plugin uninstall ${installedKey}\` leaves the Tandem-managed config in place.`,
+        `\`claude plugin uninstall ${installedKey}\` leaves the Tandem-managed config in place.` +
+        // Both register a channel shim too, and every shim counts as a push
+        // subscriber whether or not its host listens (#2186).
+        (input.wizardChannelEntry
+          ? " Both also register a tandem-channel shim, so each Claude Code session runs two."
+          : ""),
     });
   }
   return out;
@@ -2242,11 +2321,35 @@ function checkTandemPlugin(r: Recorder): void {
   }
 
   // Anything but `ok` is already reported by `checkUserMcpConfig`.
-  const wizardTandemEntry =
-    wizardRead.kind === "ok" &&
-    (wizardRead.value as { mcpServers?: Record<string, unknown> }).mcpServers?.tandem !== undefined;
+  const wizardServers =
+    wizardRead.kind === "ok"
+      ? (wizardRead.value as { mcpServers?: Record<string, unknown> }).mcpServers
+      : undefined;
+  const wizardTandemEntry = wizardServers?.tandem !== undefined;
+  const wizardChannelEntry = wizardServers?.["tandem-channel"] !== undefined;
 
-  for (const outcome of evaluateTandemPlugin({ enabledPlugins, wizardTandemEntry })) {
+  // Read only when a plugin is enabled. Same home, same screened reader, so an
+  // unsafe path here is impossible after the screen above; any non-`ok` read is
+  // simply "version unknown".
+  const pluginKey = findEnabledTandemPluginKey(enabledPlugins);
+  let installedPluginVersion: string | null = null;
+  if (pluginKey !== null) {
+    const registryRead = readClaudeConfig(
+      join(home, ".claude", "plugins", "installed_plugins.json"),
+    );
+    if (registryRead.kind === "ok") {
+      installedPluginVersion = pluginVersionFromRegistry(registryRead.value, pluginKey);
+    }
+  }
+  const bundledVersion = typeof __TANDEM_VERSION__ !== "undefined" ? __TANDEM_VERSION__ : null;
+
+  for (const outcome of evaluateTandemPlugin({
+    enabledPlugins,
+    wizardTandemEntry,
+    wizardChannelEntry,
+    installedPluginVersion,
+    bundledVersion,
+  })) {
     recordEvaluation(r, outcome);
   }
 }
