@@ -230,6 +230,23 @@ describe("buildSaveFile", () => {
     expect(out.superseded).toEqual(["cc-saved-ref"]);
   });
 
+  it("a replaced ref another record still holds (a hand-edited file) is never reported superseded", () => {
+    const install = ccInstall();
+    const sharing = { ...otherMcp, tokenSecretRef: "cc-saved-ref" } as IntegrationConfig;
+    const saved = file([ccRecord(), sharing]);
+    const card = cardFrom(install, ccRecord());
+    card.config = { ...card.config, tokenSecretRef: "cc-saved-new" } as IntegrationConfig;
+    const out = buildSaveFile({
+      saved,
+      picked: [card],
+      existing: [install],
+      deselected: empty,
+      originalRefs: refs(saved.integrations),
+    });
+    expect(out.file.integrations[1]).toMatchObject({ tokenSecretRef: "cc-saved-ref" });
+    expect(out.superseded).toEqual([]);
+  });
+
   it("new picks append after the saved records", () => {
     const desktop = desktopInstall("/d/claude_desktop_config.json");
     const fresh: MergePicked = {
