@@ -122,8 +122,6 @@ export interface TandemClaudeLive {
   standby: LauncherStandby | null;
 }
 
-/** The done screen is at its sign-in step (#2199): the line above says so, and
- * the screen offers Check sign-in — one predicate, so the two never part. */
 /**
  * Whether the done screen's line about Tandem's own Claude is the "running"
  * or "starting" one (#2199) — the only case where "open the chat panel to
@@ -143,6 +141,8 @@ export function tandemClaudeIsStartingOrRunning(
   );
 }
 
+/** The done screen is at its sign-in step (#2199): the line above says so, and
+ * the screen offers Check sign-in — one predicate, so the two never part. */
 export function tandemClaudeNeedsSignIn(
   initial: TandemClaudeAfterSetup | null,
   live: TandemClaudeLive | null,

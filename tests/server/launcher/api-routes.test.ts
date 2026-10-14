@@ -1943,7 +1943,8 @@ describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () =>
     ["a same-origin iframe", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe" }],
     ["a same-origin link", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" }],
     ["a same-origin GET with no mode or destination", {}],
-    // `dest` is the half a "simplification" would drop: these two say empty.
+    // Both say dest `empty`: they pin the MODE half, the one a
+    // "simplification" to a dest-only check would drop.
     [
       "a prefetch or ping (no-cors, empty)",
       { "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "empty" },

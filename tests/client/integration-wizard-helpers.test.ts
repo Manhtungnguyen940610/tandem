@@ -7,6 +7,7 @@ import {
   tandemClaudeNeedsSignIn,
 } from "../../src/client/components/integration-wizard-helpers.js";
 import { targetPushSupport } from "../../src/shared/integrations/contract.js";
+import { TANDEM_CLAUDE_AFTER_SETUP } from "../../src/shared/launcher/contract.js";
 
 describe("computeDoneHeaderState", () => {
   it("is 'connected' only when Claude has actually connected", () => {
@@ -93,26 +94,15 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
   });
 
   it("tandemClaudeIsStartingOrRunning holds exactly when the line is the starting or running one", () => {
-    const answers = [
-      null,
-      "unknown",
-      "starting",
-      "running",
-      "held",
-      "other-ai",
-      "refused",
-      "not-configured",
-    ] as const;
+    const answers = [null, ...TANDEM_CLAUDE_AFTER_SETUP] as const;
+    const remedies = [null, "connect", "setup", "sign-in", "restart", "start", "ai-off"] as const;
+    const standbys = [null, "off", "idle", "awaiting-start"] as const;
     const lives = [
       null,
-      stopped,
-      { ...stopped, running: true },
-      { ...stopped, remedy: "start" },
-      { ...stopped, remedy: "restart" },
-      { ...stopped, remedy: "sign-in" },
-      { ...stopped, remedy: "ai-off" },
-      { ...stopped, standby: "off", remedy: "start" },
-      { ...stopped, standby: "idle", remedy: "start" },
+      { running: true, remedy: null, standby: null },
+      ...remedies.flatMap((remedy) =>
+        standbys.map((standby) => ({ running: false, remedy, standby })),
+      ),
     ] as const;
     for (const a of answers) {
       for (const l of lives) {
