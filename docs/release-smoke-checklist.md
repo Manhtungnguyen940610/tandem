@@ -126,10 +126,12 @@ before it meets a paying user.
       on a profile that has a working 0.x setup. Expect: the wizard opens
       pre-filled; Tandem's Claude is held (Start shown, no hello yet); closing
       it and relaunching brings it back; **Keep this setup** closes it and —
-      with "Start automatically" — starts Tandem's Claude, which then says
-      hello once; relaunching shows no wizard. Check `integrations.json`
+      with "Start automatically" — starts Tandem's Claude; relaunching shows
+      no wizard. (No hello on the rc: the greeting's v1.0 re-arm ignores
+      release candidates, and the force switch is the walkthrough's alone.) Check `integrations.json`
       still holds the working directory and token ref it had before.
-      Re-check on the 1.0.0 build itself without the variable.
+      Re-check on the 1.0.0 build itself without the variable — there the
+      hello follows the release, once.
 - [ ] **License gate ON** (#1116; Windows + macOS minimum): on a gate-enabled
       build — trial banner appears → simulate trial expiry (clock or test hook)
       → hard gate engages → activate with a **real signed license** (issued by
