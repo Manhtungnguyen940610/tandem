@@ -55,6 +55,7 @@ import {
   startMcpServerHttp,
   startMcpServerStdio,
 } from "./mcp/server.js";
+import { readModeState } from "./mode.js";
 import { pushNotification } from "./notifications.js";
 import {
   decideStartupAction,
@@ -165,6 +166,8 @@ async function startLauncherSupervisor(): Promise<void> {
         markDone: () => markGreeted(appData, APP_VERSION),
       },
       subscribeTandemReply: onTandemReply,
+      // Solo, or an unreadable mode, holds the hello for a Tandem-mode start.
+      greetingHeldBySolo: () => readModeState() !== "tandem",
     });
     await launcherSupervisor.start();
   } catch (err) {

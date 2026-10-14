@@ -1436,10 +1436,12 @@ describe("the supervisor's turns tell a launched session not to self-arm", () =>
 describe("SUPERVISOR_GREETING_PROMPT (#2197)", () => {
   it("reads the inbox before greeting, so a user who already wrote gets an answer", () => {
     const inbox = SUPERVISOR_GREETING_PROMPT.indexOf("tandem_checkInbox");
-    const greet = SUPERVISOR_GREETING_PROMPT.indexOf("greet them");
+    const greet = SUPERVISOR_GREETING_PROMPT.indexOf("say hello in the chat with tandem_reply");
     expect(inbox).toBeGreaterThan(-1);
     expect(greet).toBeGreaterThan(inbox);
-    expect(SUPERVISOR_GREETING_PROMPT).toContain("tandem_reply");
+    // The hello goes to the chat even when what was waiting was a comment:
+    // a hello left in a thread is one the user may never see.
+    expect(SUPERVISOR_GREETING_PROMPT).toMatch(/even if what was waiting was a comment/);
     expect(SUPERVISOR_GREETING_PROMPT).toContain("you wait to be asked");
   });
 

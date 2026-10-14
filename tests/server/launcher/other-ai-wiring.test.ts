@@ -37,6 +37,8 @@ describe("index.ts wires the one-time greeting (#2197)", () => {
     expect(call).toMatch(/isOwed: \(\) => isGreetingOwed\(appData\)/);
     expect(call).toMatch(/markDone: \(\) => markGreeted\(appData, APP_VERSION\)/);
     expect(call).toMatch(/subscribeTandemReply: onTandemReply,/);
+    // Solo, or an unreadable mode, holds the hello (Bryan, 2026-10-14).
+    expect(call).toMatch(/greetingHeldBySolo: \(\) => readModeState\(\) !== "tandem",/);
   });
 
   it("arms the greeting at boot from the version check, before the launcher starts", () => {

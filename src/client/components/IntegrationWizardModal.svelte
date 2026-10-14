@@ -223,6 +223,16 @@ function reachabilityStatusFor(id: string): ReachabilityStatus | null {
   return reachability.results.find((r) => r.id === id)?.status ?? null;
 }
 
+// `/health.hasSession` counts every MCP session, Tandem's own background
+// Claude included (#2197). While the Apply started it (or it was running), a
+// session proves nothing about the user's own Claude, so the screen does not
+// claim "connected" and keeps the restart-and-/mcp guidance.
+const userClaudeConnected = $derived(
+  reachability.claudeConnected &&
+    wizard.tandemClaude !== "starting" &&
+    wizard.tandemClaude !== "running",
+);
+
 // Adapt the "what's next" guidance to the reachability outcome.
 const whatsNext = $derived.by((): "connected" | "unreachable" | "stdio-only" | "default" => {
   const rows = reachability.results;
@@ -231,7 +241,7 @@ const whatsNext = $derived.by((): "connected" | "unreachable" | "stdio-only" | "
   );
   if (!hasHttp && rows.length > 0) return "stdio-only";
   if (rows.some((r) => r.status === "unreachable")) return "unreachable";
-  if (reachability.claudeConnected) return "connected";
+  if (userClaudeConnected) return "connected";
   return "default";
 });
 
@@ -572,9 +582,7 @@ const anyApplyErrors = $derived(wizard.applyResults.some((r) => r.status === "er
 
 // See computeDoneHeaderState — the honesty contract lives in the pure helper
 // (unit-tested); this derived just feeds it the two live inputs.
-const doneHeaderState = $derived(
-  computeDoneHeaderState(anyApplyErrors, reachability.claudeConnected),
-);
+const doneHeaderState = $derived(computeDoneHeaderState(anyApplyErrors, userClaudeConnected));
 // The line about Tandem's own background Claude (#2197).
 const tandemClaudeLine = $derived(tandemClaudeDoneCopy(wizard.tandemClaude, tandemClaudeLive));
 
@@ -658,7 +666,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
       {#if status === "verifying"}
         Checking Tandem is reachable…
       {:else if status === "reachable"}
-        {reachability.claudeConnected
+        {userClaudeConnected
           ? "Claude connected just now"
           : "Server's up — restart Claude and run /mcp to connect it"}
       {:else if status === "unreachable"}

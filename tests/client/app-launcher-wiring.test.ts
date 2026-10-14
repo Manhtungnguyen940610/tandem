@@ -85,12 +85,21 @@ describe("App greeting and done-screen wiring (#2197)", () => {
     expect(mount).toMatch(/\{onGreetingAction\}/);
   });
 
-  it("the note restarts a running Claude, else takes the stopped launcher's remedy", () => {
+  it("the note's action comes from greetingNoteAction, fed every gate from readiness", () => {
     const d = APP.slice(APP.indexOf("const greetingAction = $derived"));
-    const body = d.slice(0, d.indexOf(");\n"));
-    expect(body).toMatch(/!aiReadiness\.greetingLate/);
-    expect(body).toMatch(/aiReadiness\.launcherRunning\s*\?\s*"relaunch"/);
-    expect(body).toMatch(/aiReadiness\.launcherRemedy \?\? "relaunch"/);
+    const body = d.slice(0, d.indexOf("}),\n);"));
+    expect(body).toMatch(/greetingNoteAction\(\{/);
+    for (const field of [
+      /greetingLate: aiReadiness\.greetingLate,/,
+      /serverUnreachable: aiReadiness\.serverUnreachable,/,
+      /aiOff: aiReadiness\.aiNotice !== null,/,
+      /stoppedByChoice: aiReadiness\.launcherStandby !== null,/,
+      /busy: aiReadiness\.launcherBusy,/,
+      /running: aiReadiness\.launcherRunning,/,
+      /remedy: aiReadiness\.launcherRemedy,/,
+    ]) {
+      expect(body).toMatch(field);
+    }
     const h = APP.slice(APP.indexOf("function onGreetingAction("));
     expect(h.slice(0, h.indexOf("\n}\n"))).toMatch(
       /if \(action === "relaunch"\) restartClaude\(\);/,

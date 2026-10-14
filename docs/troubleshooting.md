@@ -252,7 +252,7 @@ On a first run (and once on the first run of v1.0) Tandem's own Claude greets yo
 - **Claude Code isn't signed in.** Tandem's Claude is Claude Code running in the background, and it can't answer until you sign in. Open a terminal, run `claude` and sign in, then click the note's button (**Check Claude sign-in** or **Restart Tandem's Claude**).
 - **It isn't allowed to use Tandem's tools.** It runs without a window, so it cannot ask you to approve a tool the way an interactive session does; a tool it isn't allowed to use is refused. Open a terminal in the same folder, run `claude`, ask it to use one of Tandem's tools (for example "check the Tandem inbox"), and choose to always allow Tandem's tools. Then click **Restart Tandem's Claude**.
 
-The hello is retried on the next start until one arrives, so restarting after the fix is enough. It is never sent twice once it has reached the chat.
+If Claude wasn't signed in, the hello is tried again on the start after you sign in. Otherwise it is sent once and not repeated: after a tool-permission fix Claude works normally but does not say hello again, which is expected. In Solo mode it waits: Tandem's Claude only speaks when spoken to there, so the hello comes on the first start after you switch to Tandem mode.
 
 ## Channel shim fails to start
 

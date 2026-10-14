@@ -38,6 +38,8 @@ const wizardStub: {
   picked: IntegrationWizardState["picked"];
   applyResults: ApplyItemResult[];
   tandemClaude: string | null;
+  /** `/health.hasSession`'s latch, which Tandem's own child also sets. */
+  claudeConnected: boolean;
   channelRegistered: boolean | null;
   /**
    * Delegated to a `$state` cell (#1432). A plain field here would be read
@@ -50,6 +52,7 @@ const wizardStub: {
   picked: [],
   applyResults: [],
   tandemClaude: null,
+  claudeConnected: false,
   channelRegistered: null,
   get step(): WizardStep {
     return wizardStepCell.value as WizardStep;
@@ -107,7 +110,9 @@ vi.mock(import("../../src/client/hooks/useReachabilityCheck.svelte"), () => ({
   createReachabilityCheck: () => ({
     phase: "done",
     serverUp: null,
-    claudeConnected: false,
+    get claudeConnected() {
+      return wizardStub.claudeConnected;
+    },
     results: wizardStub.applyResults.map((r) => ({
       id: r.id,
       status: r.id.startsWith("claude-desktop") ? "not-applicable" : "reachable",
@@ -790,8 +795,30 @@ describe("IntegrationWizardModal — Tandem's own Claude on the done screen (#21
     wizardStub.picked = [];
     wizardStub.applyResults = [];
     wizardStub.tandemClaude = null;
+    wizardStub.claudeConnected = false;
     wizardStepCell.reset();
   });
+
+  it.each([
+    ["starting", false],
+    ["running", false],
+    [null, true],
+  ] as const)(
+    "a session after an apply that answered %s: claims 'connected' only when Tandem's own Claude cannot be the session",
+    async (tandemClaude, claims) => {
+      wizardStub.picked = [pickedCode()];
+      wizardStub.applyResults = [applied("claude-code-1")];
+      wizardStub.tandemClaude = tandemClaude;
+      wizardStub.claudeConnected = true;
+      const { container } = render(IntegrationWizardModal, {
+        props: { open: true, onClose: vi.fn(), tandemClaudeLive: null },
+      });
+      await tick();
+      const row = q(container, "integration-wizard-reachability-claude-code-1")?.textContent ?? "";
+      if (claims) expect(row).toContain("Claude connected just now");
+      else expect(row).toContain("restart Claude and run /mcp");
+    },
+  );
 
   it("names the start the apply reported, and the live state refines it", async () => {
     wizardStub.picked = [pickedCode()];

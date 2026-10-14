@@ -2625,6 +2625,33 @@ describe("#2197 — startAfterSetup: a wizard Apply starts Tandem's Claude when 
     expect(children).toHaveLength(0);
   });
 
+  it("a sign-in stop (a tripped breaker) is a diagnosis: held, nothing spawned", async () => {
+    const { sup } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !sup.status().running, "the sign-in stop");
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+  });
+
+  it("'refused' is recorded, so activating the licence starts it", async () => {
+    let refused = true;
+    const { sup } = await firstRunSupervisor({
+      aiRefusal: () => (refused ? LICENCE_REFUSAL : null),
+    });
+    expect(await sup.startAfterSetup()).toBe("refused");
+    expect(sup.licenceRefusal()).not.toBeNull();
+    refused = false;
+    await sup.resumeAfterLicence();
+    await nthChild(1);
+  });
+
   it("after shutdown's stop(): held", async () => {
     const { sup } = await firstRunSupervisor();
     await sup.stop();
@@ -2757,6 +2784,45 @@ describe("#2197 — the one-time greeting", () => {
     expect(g.markDone).toHaveBeenCalledTimes(1);
   });
 
+  it("matches its own child's session id case-insensitively", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    const own = JSON.parse(
+      fs.readFileSync(path.join(baseDir, "launcher-session.json"), "utf8"),
+    ) as { sessionId: string };
+    g.claudeWrote(own.sessionId.toUpperCase());
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("in Solo the hello waits: the ordinary first turn, still owed, then greeted in Tandem mode", async () => {
+    const g = greetingSeam();
+    let solo = true;
+    const { sup } = makeSupervisor({ ...g.extra, greetingHeldBySolo: () => solo });
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    expect(g.state.owed).toBe(true);
+    solo = false;
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("a mode read that throws holds the hello too", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({
+      ...g.extra,
+      greetingHeldBySolo: () => {
+        throw new Error("ctrl doc gone");
+      },
+    });
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
   it("a marker write that fails cannot make this process greet twice", async () => {
     const g = greetingSeam();
     g.markDone.mockImplementation(async () => {
@@ -2774,7 +2840,10 @@ describe("#2197 — the one-time greeting", () => {
     expect(occurrences("Could not record that the greeting was sent")).toBe(1);
   });
 
-  it("a greeting turn that ends with no message is late; the marker stays owed and the next spawn retries", async () => {
+  it("a greeting turn that ends with no chat message is late, but spent: never sent again", async () => {
+    // "Once" must not hang on spotting the reply (a hello posted in a comment
+    // thread, a session id we could not match): a miss would re-send it on
+    // every later spawn.
     const g = greetingSeam();
     const { sup } = makeSupervisor(g.extra);
     await sup.startFresh(cwdDir);
@@ -2782,12 +2851,96 @@ describe("#2197 — the one-time greeting", () => {
     pushJson(children[0], RESULT_OK);
     await settle();
     expect(sup.status()).toMatchObject({ running: true, greetingLate: true });
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    expect(g.state.owed).toBe(false);
+    // A later reply from the child still clears the note.
+    g.claudeWrote();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("the restart the note advises retires the note, though the hello is spent", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    await sup.relaunch(cwdDir);
+    await nthChild(2);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("an errored greeting turn leaves it owed, and the next spawn greets", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "error_during_execution", is_error: true });
+    await settle();
     expect(g.markDone).not.toHaveBeenCalled();
     await sup.startFresh(cwdDir);
     const child2 = await nthChild(2);
     expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
     // A new greeting turn is pending again, not late.
     expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("a crash before the greeting turn ends: the crash restart does not greet again", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    exitChild(children[0], 1);
+    const child2 = await nthChild(2);
+    await settle();
+    expect(texts(child2)).not.toContain(SUPERVISOR_GREETING_PROMPT);
+    // Still owed on disk: the next Tandem launch tries again.
+    expect(g.state.owed).toBe(true);
+    await sup.stop();
+  });
+
+  it("a restart we asked for while the greeting is pending greets again", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("no note while stopped by choice: Off after an unanswered greeting", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    await sup.updateSettings({ startMode: "off" });
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, standby: "off" });
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("a resumed spawn owing both the greeting and a sign-in re-check writes one turn", async () => {
+    const g = greetingSeam(false);
+    const first = makeSupervisor(g.extra).sup;
+    await first.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !first.status().running, "the sign-in stop");
+    await first.stop();
+    g.state.owed = true;
+    const { sup } = makeSupervisor(g.extra);
+    await sup.start();
+    const child2 = await nthChild(2);
+    await settle();
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
   });
 
   it("still pending past the window is late; a message then clears it", async () => {

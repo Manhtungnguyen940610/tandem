@@ -132,10 +132,28 @@ export function tandemClaudeDoneCopy(
   live: TandemClaudeLive | null,
 ): string | null {
   if (initial === null || initial === "unknown") return null;
-  if (initial === "starting" || initial === "running") {
-    if (live?.running) {
-      return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there.";
+  // Held copy, shared by an Apply that held and one whose start has since
+  // settled into a standby (an idle stop while the screen is open).
+  const heldLine = (): string => {
+    if (live?.standby === "off") {
+      return "Tandem's own Claude is turned off. Start it from the status bar or the chat panel when you want it.";
     }
+    if (live?.standby === "idle") {
+      return "Tandem's own Claude stopped while it was idle. Sending a chat message starts it again.";
+    }
+    // Held over a diagnosis (a crash loop, a sign-in stop, a stop that
+    // could not be confirmed): that, not Start, is what needs attention.
+    if (live?.remedy && live.remedy !== "start") {
+      return "Tandem's own Claude is stopped. The status bar shows what to do.";
+    }
+    return "Tandem's own Claude starts when you click Start in the status bar or the chat panel, or send it a chat message.";
+  };
+  // Whatever the Apply answered, a Claude that is running now is the truth.
+  if (live?.running) {
+    return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there.";
+  }
+  if (initial === "starting" || initial === "running") {
+    if (live?.standby) return heldLine();
     if (live?.remedy && live.remedy !== "start") {
       return "Tandem's own Claude couldn't start. The status bar shows what to do.";
     }
@@ -143,19 +161,13 @@ export function tandemClaudeDoneCopy(
   }
   switch (initial) {
     case "held":
-      if (live?.standby === "off") {
-        return "Tandem's own Claude is turned off. Start it from the status bar or the chat panel when you want it.";
-      }
-      if (live?.standby === "idle") {
-        return "Tandem's own Claude stopped while it was idle. Sending a chat message starts it again.";
-      }
-      return "Tandem's own Claude starts when you click Start in the status bar or the chat panel.";
+      return heldLine();
     case "other-ai":
       return "Tandem didn't start its own Claude, because another AI session is already connected to it.";
     case "refused":
       return "Tandem's AI features are off, so it didn't start its own Claude. See Settings → License.";
     case "not-configured":
-      return "Tandem couldn't find Claude Code to start its own Claude. Check that Claude Code is installed.";
+      return "Tandem couldn't find the Claude Code setup it just saved, so it didn't start its own Claude. Try running setup again.";
     default: {
       const _exhaustive: never = initial;
       return _exhaustive;

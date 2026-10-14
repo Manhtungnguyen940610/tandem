@@ -111,10 +111,29 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
     expect(tandemClaudeDoneCopy("held", { ...stopped, standby })).toContain(phrase);
   });
 
+  it("a start that has since settled into a standby says so, not 'starting'", () => {
+    const line = tandemClaudeDoneCopy("starting", { ...stopped, standby: "idle", remedy: "start" });
+    expect(line).toMatch(/stopped while it was idle/);
+  });
+
+  it("whatever the Apply answered, a Claude running now reads as running", () => {
+    for (const initial of ["held", "other-ai"] as const) {
+      expect(tandemClaudeDoneCopy(initial, { ...stopped, running: true })).toMatch(
+        /^Tandem's own Claude is running/,
+      );
+    }
+  });
+
+  it("held over a diagnosis points at it, not at Start", () => {
+    const line = tandemClaudeDoneCopy("held", { ...stopped, remedy: "restart" });
+    expect(line).toMatch(/is stopped/);
+    expect(line).not.toMatch(/click Start/);
+  });
+
   it.each([
     ["other-ai", "another AI session"],
     ["refused", "Settings → License"],
-    ["not-configured", "couldn't find Claude Code"],
+    ["not-configured", "couldn't find the Claude Code setup it just saved"],
   ] as const)("%s has its own line", (initial, phrase) => {
     expect(tandemClaudeDoneCopy(initial, stopped)).toContain(phrase);
   });

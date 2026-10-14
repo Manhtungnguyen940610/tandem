@@ -222,6 +222,14 @@ interface SupervisorOpts {
    * spawn is not the greeting. Default: never.
    */
   subscribeTandemReply?: (cb: (sessionId: string | undefined) => void) => () => void;
+  /**
+   * True while the user's mode is Solo, or cannot be read (#2197; Bryan,
+   * 2026-10-14): the hello is unasked, and Solo means Claude speaks only when
+   * spoken to, so a spawn in Solo sends its ordinary first turn and the
+   * greeting stays owed for the first spawn in Tandem mode. `index.ts` wires
+   * `readModeState`. The default is "never Solo"; a throw reads as Solo.
+   */
+  greetingHeldBySolo?: () => boolean;
   /** Override for `GREETING_REPLY_WINDOW_MS`, for tests. */
   greetingWindowMs?: number;
 }
@@ -1122,28 +1130,56 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * `tandem_reply` from this supervisor's own child lands (and the marker is
    * then marked done);
    * `unanswered` if the turn ends, or its child exits, with no message. A
+   * later reply from the child in this process still counts as `answered`:
+   * the user has heard from Tandem's Claude, and the note should go. A
    * process greets at most once successfully (`greetedThisProcess`), so a
-   * marker write that failed cannot greet again on the next spawn.
+   * marker write that failed cannot greet again on the next spawn. Never in
+   * Solo (`greetingHeldBySolo`): that spawn's first turn is the ordinary one,
+   * and the greeting stays owed.
    */
   let greeting: { phase: "pending" | "answered" | "unanswered"; sentAt: number } | null = null;
   let greetedThisProcess = false;
+  /** A greeting turn's child crashed before the turn ended: no further greeting
+   * in this process, so a crash loop cannot re-send it on every restart. The
+   * next Tandem launch tries again (the marker is still owed). */
+  let greetingCrashedThisProcess = false;
+  /** Spend the greeting: never again in this process, and `done` on disk.
+   * Idempotent — a turn's end and its reply can both get here. */
+  function spendGreeting(): void {
+    if (greetedThisProcess) return;
+    greetedThisProcess = true;
+    greetingMarker.markDone().catch((err: unknown) => {
+      console.error("[Launcher] Could not record that the greeting was sent:", err);
+    });
+  }
   // A reply carrying another session's id is that session's, not the
   // greeting. One with no id is counted: the header is optional, and a child
   // that never sends it must not owe its greeting on every spawn.
   const unsubscribeTandemReply = (opts.subscribeTandemReply ?? (() => () => {}))((sessionId) => {
     if (greeting === null || greeting.phase === "answered") return;
-    if (sessionId !== undefined && !ownChildSessionIds.has(sessionId)) return;
+    if (sessionId !== undefined && !isOwnChildSession(sessionId)) return;
     greeting.phase = "answered";
-    greetedThisProcess = true;
     unsubscribeTandemReply();
-    greetingMarker.markDone().catch((err: unknown) => {
-      console.error("[Launcher] Could not record that the greeting was sent:", err);
-    });
+    spendGreeting();
   });
 
-  /** Read the marker; any failure reads as not owed (see `greeting.ts`). */
+  /** Case-folded, as the MCP registry compares Claude session ids: a UUID
+   * may round-trip through the session file in either case. */
+  function isOwnChildSession(sessionId: string): boolean {
+    const key = sessionId.toLowerCase();
+    for (const id of ownChildSessionIds) if (id.toLowerCase() === key) return true;
+    return false;
+  }
+
+  /** Read the marker; any failure reads as not owed (see `greeting.ts`). In
+   * Solo, or a mode that cannot be read, the greeting waits (and stays owed). */
   function greetingOwedNow(): boolean {
-    if (greetedThisProcess) return false;
+    if (greetedThisProcess || greetingCrashedThisProcess) return false;
+    try {
+      if (opts.greetingHeldBySolo?.() === true) return false;
+    } catch {
+      return false;
+    }
     try {
       return greetingMarker.isOwed();
     } catch {
@@ -1154,7 +1190,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   /** The hello was asked for and has not reached the chat: its turn ended
    * without a message, or the window passed. */
   function greetingLate(): boolean {
-    if (greeting === null) return false;
+    // A standby is the user's choice (or idle): nothing for the note to fix.
+    if (greeting === null || standby !== undefined) return false;
     if (greeting.phase === "unanswered") return true;
     return greeting.phase === "pending" && Date.now() - greeting.sentAt >= greetingWindowMs;
   }
@@ -2028,11 +2065,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       pendingWake = false;
       clearLatch();
       clearIdle();
-      // A child that ends before its greeting turn does (a sign-in refusal, a
-      // crash, a stop) has not greeted anyone.
+      // A child that ends before its greeting turn does (a crash, a stop) has
+      // not greeted anyone. A crash also ends greeting in this process: the
+      // greeting turn may be what crashed it, and the restart must not send it
+      // again (the same reasoning as the crash carry above). A stop we asked
+      // for — the note's own Restart — may try again.
       if (awaitingGreetingResult) {
         awaitingGreetingResult = false;
         if (greeting?.phase === "pending") greeting.phase = "unanswered";
+        if (!stopRequested) greetingCrashedThisProcess = true;
       }
       // Identity-guarded: only drop the shared handle if it still points at
       // THIS spawn. A late exit from a superseded process must not clear the
@@ -2080,6 +2121,10 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // the bootstrap when fresh, the wake / sign-in re-check when resumed. It
     // asks for `tandem_checkInbox` first, so it discharges an owed wake too.
     const greetNow = greetingOwedNow();
+    // A spawn that does not greet retires the last greeting's note: the user
+    // restarted (the note's own advice) or Claude came back by itself, and an
+    // old turn's "hasn't said hello" no longer describes this child.
+    if (!greetNow) greeting = null;
     const writeGreeting = (): void => {
       if (!sendTurn(SUPERVISOR_GREETING_PROMPT)) return;
       greeting = { phase: "pending", sentAt: Date.now() };
@@ -2170,9 +2215,16 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         unresolvedTurns = Math.max(0, unresolvedTurns - 1);
         // The greeting is this spawn's first turn, so the first `result` is its
         // end (#2197). A message it wrote has already flipped it to answered.
+        // A turn that ran spends the greeting whether or not a chat reply was
+        // seen: "once" must not hang on spotting the reply (a hello posted in
+        // a comment thread, a client sending no session id that we could
+        // match), because a miss would re-send it on every later spawn. Only
+        // an errored turn — Claude never got to speak, the sign-in refusal
+        // among them — leaves it owed, so the start after the fix greets.
         if (awaitingGreetingResult) {
           awaitingGreetingResult = false;
           if (greeting?.phase === "pending") greeting.phase = "unanswered";
+          if (parsed.is_error !== true) spendGreeting();
         }
 
         // A Claude Code that is not signed in answers every turn with this
@@ -3060,7 +3112,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // On-click holds boot (#2195), and a first Apply is boot for a Claude
       // that has never run; idle-stopped is a choice too.
       if (settings.startMode !== "auto" || standby !== undefined) return decide("held");
-      if (decideRefusal() !== null) return decide("refused");
+      // A tripped breaker (a crash loop, a sign-in stop) or a stop that could
+      // not be confirmed (its child may still be alive) is a diagnosis for the
+      // user to act on: an Apply does not clear it the way their Start does.
+      if (breakerTripped || lastError === "stop-failed") return decide("held");
+      const refusal = decideRefusal();
+      if (refusal !== null) {
+        recordLicenceRefusal(refusal);
+        return decide("refused");
+      }
       // Bryan's #2196 rule, applied here as well: never a second AI beside
       // the user's own.
       if (anotherAiOn()) return decide("other-ai");

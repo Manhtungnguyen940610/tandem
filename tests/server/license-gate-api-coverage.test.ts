@@ -153,7 +153,7 @@ const ROUTE_GATES: RouteGate[] = [
   {
     constant: "API_INTEGRATIONS_APPLY",
     gate: "open",
-    why: "writes MCP config, not documents; then refreshes the launcher's configured state",
+    why: "writes MCP config, not documents; a claude-code apply then asks the supervisor to start Tandem's Claude (#2197), which the supervisor refuses itself (startAfterSetup and respawn both consult aiRefusal), so refusing here would only block the user's own setup",
   },
   {
     constant: "API_INTEGRATIONS_SECRET",
