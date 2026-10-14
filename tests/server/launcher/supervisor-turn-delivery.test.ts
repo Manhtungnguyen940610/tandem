@@ -2962,6 +2962,15 @@ describe("#2197 — the one-time greeting", () => {
     expect(g.markDone).not.toHaveBeenCalled();
   });
 
+  it("a subtype this build doesn't know spends the greeting — never greet on every spawn", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "some_new_kind", is_error: false });
+    await settle();
+    expect(g.markDone).toHaveBeenCalled();
+  });
+
   it("a crash before the greeting turn ends: the crash restart does not greet again", async () => {
     const g = greetingSeam();
     const { sup } = makeSupervisor(g.extra);
