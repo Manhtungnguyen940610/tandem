@@ -152,6 +152,7 @@ import DocumentTabs from "./tabs/DocumentTabs.svelte";
 import { isRenamable } from "./types.js";
 import { MCP_BASE_URL } from "./utils/backend-ports";
 import { openFileForRuntime } from "./utils/browse-file";
+import { createLaunchLatch } from "./utils/launch-latch.svelte";
 import { resolveDefaultModelChip } from "./utils/model-chip";
 import { resolveModelFirstRunNeeded } from "./utils/model-first-run";
 import { addRecentFile, loadRecentFiles, saveRecentFiles } from "./utils/recentFiles";
@@ -811,15 +812,10 @@ $effect(() => {
 
 const WIZARD_DISMISSED_KEY = "tandem:wizard-dismissed";
 /** The auto-opened wizard was closed during this server launch (#2198): not
- * again until the next one. Keyed on the server's `launchId`, so "next launch"
- * means a server start in the browser distribution too (a tab reloaded after a
- * restart gets it back), and in localStorage, so every tab agrees. Memory
- * alone holds it when storage is unavailable. */
+ * again until the next one (`createLaunchLatch`). */
 const WIZARD_CLOSED_LAUNCH_KEY = "tandem:wizard-closed-for-launch";
 let dismissedForVersion = $state<string | null>(readDismissed());
-let wizardClosedForLaunch = $state<string | null>(readClosedForLaunch());
-/** An older server sends no launchId: then this page's memory is the launch. */
-let wizardClosedThisPage = $state(false);
+const wizardClosedLatch = createLaunchLatch(WIZARD_CLOSED_LAUNCH_KEY, () => firstRun.launchId);
 let manuallyReopened = $state(false);
 
 function readDismissed(): string | null {
@@ -827,28 +823,6 @@ function readDismissed(): string | null {
     return localStorage.getItem(WIZARD_DISMISSED_KEY);
   } catch {
     return null;
-  }
-}
-
-function readClosedForLaunch(): string | null {
-  try {
-    return localStorage.getItem(WIZARD_CLOSED_LAUNCH_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function markClosedThisLaunch(): void {
-  const launch = firstRun.launchId;
-  if (launch === null) {
-    wizardClosedThisPage = true;
-    return;
-  }
-  wizardClosedForLaunch = launch;
-  try {
-    localStorage.setItem(WIZARD_CLOSED_LAUNCH_KEY, launch);
-  } catch {
-    // Storage unavailable — memory alone holds it for this page.
   }
 }
 
@@ -881,9 +855,7 @@ const isAutoOpenFirstRun = $derived(
     walkthrough: firstRun.walkthrough,
     serverVersion: firstRun.serverVersion,
     dismissedForVersion,
-    closedThisSession:
-      wizardClosedThisPage ||
-      (firstRun.launchId !== null && wizardClosedForLaunch === firstRun.launchId),
+    closedThisSession: wizardClosedLatch.active,
   }),
 );
 /** The version the walkthrough is owed on, for the wizard's Keep. */
@@ -910,7 +882,7 @@ function closeIntegrationWizard(): void {
   // session alone.
   if (isAutoOpenFirstRun && firstRun.serverVersion !== null) {
     if (!firstRun.walkthrough) dismissForVersion(firstRun.serverVersion);
-    markClosedThisLaunch();
+    wizardClosedLatch.mark();
   }
   manuallyReopened = false;
   wizardFocusClaudeCodeOffer = false;
@@ -921,35 +893,14 @@ function closeIntegrationWizard(): void {
 }
 
 // --- The chat panel's offer to set up Tandem's own Claude (#2199) -------------
-/** "Not now" holds until the next server launch, keyed like the wizard's
- * closed-for-launch (`launchId`; page memory for an older server). */
-const CLAUDE_CODE_OFFER_DISMISSED_KEY = "tandem:claude-code-offer-dismissed";
-let claudeCodeOfferDismissedFor = $state<string | null>(readClaudeCodeOfferDismissed());
-let claudeCodeOfferDismissedThisPage = $state(false);
+/** "Not now" holds until the next server launch, like the wizard's
+ * closed-for-launch. */
+const claudeCodeOfferDismissed = createLaunchLatch(
+  "tandem:claude-code-offer-dismissed",
+  () => firstRun.launchId,
+);
 /** The wizard was opened from the offer: it brings its own offer into view. */
 let wizardFocusClaudeCodeOffer = $state(false);
-
-function readClaudeCodeOfferDismissed(): string | null {
-  try {
-    return localStorage.getItem(CLAUDE_CODE_OFFER_DISMISSED_KEY);
-  } catch {
-    return null;
-  }
-}
-
-function dismissClaudeCodeOffer(): void {
-  const launch = firstRun.launchId;
-  if (launch === null) {
-    claudeCodeOfferDismissedThisPage = true;
-    return;
-  }
-  claudeCodeOfferDismissedFor = launch;
-  try {
-    localStorage.setItem(CLAUDE_CODE_OFFER_DISMISSED_KEY, launch);
-  } catch {
-    claudeCodeOfferDismissedThisPage = true;
-  }
-}
 
 function openWizardAtClaudeCodeOffer(): void {
   window.dispatchEvent(
@@ -963,9 +914,7 @@ const claudeCodeOfferOk = $derived(
     pushAttached: aiReadiness.pushDelivery === "attached",
     aiOff: licenseStore.ui.aiOff,
     solo: modeState.tandemMode === "solo",
-    dismissed:
-      claudeCodeOfferDismissedThisPage ||
-      (firstRun.launchId !== null && claudeCodeOfferDismissedFor === firstRun.launchId),
+    dismissed: claudeCodeOfferDismissed.active,
   }),
 );
 
@@ -993,12 +942,8 @@ $effect(() => {
     if (ev.key === WIZARD_DISMISSED_KEY) {
       dismissedForVersion = ev.newValue;
     }
-    if (ev.key === WIZARD_CLOSED_LAUNCH_KEY) {
-      wizardClosedForLaunch = ev.newValue;
-    }
-    if (ev.key === CLAUDE_CODE_OFFER_DISMISSED_KEY) {
-      claudeCodeOfferDismissedFor = ev.newValue;
-    }
+    wizardClosedLatch.onStorage(ev);
+    claudeCodeOfferDismissed.onStorage(ev);
   };
   window.addEventListener("storage", onStorage);
   return () => window.removeEventListener("storage", onStorage);
@@ -2857,7 +2802,7 @@ const shouldShowModelPicker = $derived(
             {onGreetingAction}
             claudeCodeOfferEligible={claudeCodeOfferOk}
             onClaudeCodeOfferSetup={openWizardAtClaudeCodeOffer}
-            onClaudeCodeOfferDismiss={dismissClaudeCodeOffer}
+            onClaudeCodeOfferDismiss={claudeCodeOfferDismissed.mark}
             visible={chatVisible}
             aiDisabled={licenseStore.ui.aiOff}
           />

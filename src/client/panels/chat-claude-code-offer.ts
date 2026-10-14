@@ -1,5 +1,4 @@
-import { DELIVERY_STALL_MS } from "../../shared/constants";
-import type { ChatPickup } from "./chat-pickup";
+import { type ChatPickup, isPickupStalled } from "./chat-pickup";
 
 /**
  * The chat panel's offer to set up Tandem's own Claude (#2199): "Answers here
@@ -45,7 +44,7 @@ export function showClaudeCodeOffer(
 ): boolean {
   if (!eligible) return false;
   if (messageCount === 0) return true;
-  return pickup?.kind === "waiting" && pickup.waitedMs >= DELIVERY_STALL_MS;
+  return isPickupStalled(pickup);
 }
 
 export const CLAUDE_CODE_OFFER_TEXT =

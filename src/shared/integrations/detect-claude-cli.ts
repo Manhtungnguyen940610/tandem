@@ -40,14 +40,17 @@ export interface DetectClaudeCliOptions {
  * PATH wins over `~/.local/bin`: if it's on PATH it's usable right now, which
  * is the more useful signal for callers.
  *
- * "Present" is not "startable" on Windows — see {@link isBareNameLaunchable}.
+ * "Present" is not "startable" — see {@link resolveClaudeLaunch}, which is
+ * what the launcher runs. The two answer different questions and can differ at
+ * the edges (a `claude` without the execute bit, one only in a relative PATH
+ * entry, a Windows shim): this one says whether to offer an install.
  */
 export function detectClaudeCli(opts: DetectClaudeCliOptions = {}): ClaudeCliPresence {
   const platform = opts.platformOverride ?? process.platform;
   const home = opts.homeOverride ?? homedir();
 
   // First-hit over PATH is exactly `isOnPath`'s semantics, so this half shares
-  // it. The OTHER walk in this file (`isBareNameLaunchable`) does not and keeps
+  // it. The OTHER walk in this file (`resolveClaudeLaunch`) does not and keeps
   // its own loop — it must see the whole PATH to distinguish "a shim, and no
   // `.exe` anywhere" from "a shim ahead of a real `.exe`".
   if (isOnPath("claude", { pathOverride: opts.pathOverride, platformOverride: platform })) {
@@ -179,7 +182,7 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
     if (win32 && rejectUnsafeWindowsPrefix(dir) !== null) continue;
     const candidate = join(dir, win32 ? `${stem}.exe` : stem);
     if (startable(candidate)) return { command: candidate, knownUnstartable: false };
-    if (wrappers.some((n) => isFile(join(dir, n)))) sawWrapper = true;
+    if (!sawWrapper && wrappers.some((n) => isFile(join(dir, n)))) sawWrapper = true;
   }
 
   // The native installer's location, for the default name only.
@@ -213,6 +216,9 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
  * (`NOT_INSTALLED` / `INSTALLED_NOT_ON_PATH`).
  */
 export function isBareNameLaunchable(opts: BareNameLaunchableOptions = {}): boolean {
+  // Off Windows nothing is `knownUnstartable`, so the walk could only answer
+  // true: skip it.
+  if ((opts.platformOverride ?? process.platform) !== "win32") return true;
   const launch = resolveClaudeLaunch(opts);
   return launch.command !== null || !launch.knownUnstartable;
 }

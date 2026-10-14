@@ -1717,17 +1717,17 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
 
   /** `idleLimitMs`: stop the child after this long without a turn, or `null`
    * to keep it running (#2195). */
-  async function spawnOnce(plan: SpawnPlan, idleLimitMs: number | null): Promise<void> {
+  /** `claudeBin` is the caller's `resolveCommand()` answer — absolute, never a
+   * bare name (#2199). The caller resolves it, so a missing CLI is answered on
+   * its own terms (`cli-unusable`) rather than as a spawn failure. */
+  async function spawnOnce(
+    plan: SpawnPlan,
+    idleLimitMs: number | null,
+    claudeBin: string,
+  ): Promise<void> {
     if (child) throw new Error("Supervisor already running — call stop() first");
 
     const reaper = reaperPath();
-    // Every caller checks `resolveCommand` first; this covers a CLI removed in
-    // the moment between that check and this spawn.
-    const claudeBin = resolveCommand();
-    if (claudeBin === null) {
-      recordCliUnusable("Spawning Claude");
-      throw new Error("Claude Code was not found");
-    }
     const claudeArgs = buildClaudeArgs(plan);
 
     const reaperArgs = [String(process.pid), claudeBin, ...claudeArgs];
@@ -2720,12 +2720,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       }
       return;
     }
-    if (resolveCommand() === null) {
+    const claudeBin = resolveCommand();
+    if (claudeBin === null) {
       recordCliUnusable("Starting Claude");
       return;
     }
     try {
-      await spawnOnce(plan, idleMsFor(latestSettings(settings)));
+      await spawnOnce(plan, idleMsFor(latestSettings(settings)), claudeBin);
       // Reset backoff once a spawn runs long enough to be considered stable.
       // Must match RESUME_CONFIRM_MS — a doomed --resume exits at ~6s, so
       // the old 5s timer fired while the process was still alive, resetting
@@ -2877,7 +2878,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (plan === null && standby === "off") disarmGapWatch();
     }
     if (!plan || !settings) return { spawned: false, why: "no-integration" };
-    if (resolveCommand() === null) {
+    const claudeBin = resolveCommand();
+    if (claudeBin === null) {
       recordCliUnusable("Starting Claude");
       return { spawned: false, why: "cli-unusable" };
     }
@@ -2895,7 +2897,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (standby === "off") setStandby("awaiting-start");
     }
     await persistRequestedCwd(plan, cwdOverride, opts?.persistCwd);
-    await spawnOnce(plan, idleMsFor(latestSettings(settings)));
+    await spawnOnce(plan, idleMsFor(latestSettings(settings)), claudeBin);
     return { spawned: true };
   }
 

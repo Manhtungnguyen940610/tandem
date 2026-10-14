@@ -111,7 +111,7 @@ export function pushSupportNote(
  * signed in. "Open a new terminal" rather than a path: the installer adds
  * `~/.local/bin` to the PATH of terminals opened after it, and a typed path
  * differs per shell. */
-export const TANDEM_CLAUDE_SIGN_IN_LINE =
+const TANDEM_CLAUDE_SIGN_IN_LINE =
   "One more step: sign in to Claude Code. Open a new terminal, run claude, and sign in when it asks — you can close the terminal once you're signed in. Then choose Check sign-in.";
 
 /** Readiness's live view of Tandem's Claude, for the done screen's line. */
@@ -120,6 +120,20 @@ export interface TandemClaudeLive {
   /** `launcherRemedy`: non-null when it is stopped and something would fix it. */
   remedy: AiRemedy | null;
   standby: LauncherStandby | null;
+}
+
+/** The done screen is at its sign-in step (#2199): the line above says so, and
+ * the screen offers Check sign-in — one predicate, so the two never part. */
+export function tandemClaudeNeedsSignIn(
+  initial: TandemClaudeAfterSetup | null,
+  live: TandemClaudeLive | null,
+): boolean {
+  return (
+    initial !== null &&
+    initial !== "unknown" &&
+    live?.running !== true &&
+    live?.remedy === "sign-in"
+  );
 }
 
 /**
@@ -163,7 +177,7 @@ export function tandemClaudeDoneCopy(
   // not signed in is the one thing still in the way, and the step is the
   // user's. Ahead of the switch, so an `other-ai` or `held` answer that a
   // later Start overtook does not keep its stale line.
-  if (live?.remedy === "sign-in") return TANDEM_CLAUDE_SIGN_IN_LINE;
+  if (tandemClaudeNeedsSignIn(initial, live)) return TANDEM_CLAUDE_SIGN_IN_LINE;
   if (initial === "starting" || initial === "running") {
     if (live?.standby) return heldLine();
     if (live?.remedy && live.remedy !== "start") {

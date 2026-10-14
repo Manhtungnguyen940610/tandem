@@ -90,7 +90,12 @@ import { type AiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import type { Handler } from "../mcp/routes/_shared.js";
 import { previewCwdDrift } from "./cwd-preview.js";
 import { readLauncherSettings, SettingsNewerError, updateLauncherSettings } from "./settings.js";
-import { LicenseRefusedError, resolveRouteCwd, type Supervisor } from "./supervisor.js";
+import {
+  LicenseRefusedError,
+  type RespawnResult,
+  resolveRouteCwd,
+  type Supervisor,
+} from "./supervisor.js";
 
 /**
  * Single-use nonce gate for mutating launcher routes.
@@ -367,12 +372,12 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
   };
 }
 
-/** 404 for a relaunch / start-fresh whose plan found no launchable claude-code
- * entry (#2180). The message is shown to the user verbatim by the client's
- * launcher toast, so it says what to do. */
 /** A start that spawned nothing: no integration, or (#2199) no Claude Code
- * program to start. */
-function sendNotSpawned(res: Response, why: "no-integration" | "cli-unusable"): void {
+ * program to start (409, a running Claude left alone). */
+function sendNotSpawned(
+  res: Response,
+  why: Extract<RespawnResult, { spawned: false }>["why"],
+): void {
   if (why === "cli-unusable") {
     res.status(409).json({
       error: "CONFLICT",
@@ -384,6 +389,9 @@ function sendNotSpawned(res: Response, why: "no-integration" | "cli-unusable"): 
   sendNoIntegration(res);
 }
 
+/** 404 for a relaunch / start-fresh whose plan found no launchable claude-code
+ * entry (#2180). The message is shown to the user verbatim by the client's
+ * launcher toast, so it says what to do. */
 function sendNoIntegration(res: Response): void {
   res.status(404).json({
     error: "NOT_FOUND",

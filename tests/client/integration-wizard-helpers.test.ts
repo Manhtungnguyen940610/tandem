@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   computeDoneHeaderState,
   pushSupportNote,
-  TANDEM_CLAUDE_SIGN_IN_LINE,
   tandemClaudeDoneCopy,
+  tandemClaudeNeedsSignIn,
 } from "../../src/client/components/integration-wizard-helpers.js";
 import { targetPushSupport } from "../../src/shared/integrations/contract.js";
 
@@ -106,10 +106,14 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
 
   it("a sign-in stop is the sign-in step, whatever the Apply answered (#2199)", () => {
     for (const initial of ["starting", "running", "held", "other-ai", "cli-unusable"] as const) {
-      expect(tandemClaudeDoneCopy(initial, { ...stopped, remedy: "sign-in" })).toBe(
-        TANDEM_CLAUDE_SIGN_IN_LINE,
+      expect(tandemClaudeDoneCopy(initial, { ...stopped, remedy: "sign-in" })).toMatch(
+        /^One more step: sign in to Claude Code/,
       );
+      // The line and the Check sign-in button share one predicate.
+      expect(tandemClaudeNeedsSignIn(initial, { ...stopped, remedy: "sign-in" })).toBe(true);
     }
+    expect(tandemClaudeNeedsSignIn(null, { ...stopped, remedy: "sign-in" })).toBe(false);
+    expect(tandemClaudeNeedsSignIn("starting", { ...stopped, remedy: "restart" })).toBe(false);
     // Running wins over it: a sign-in that has since worked is not still owed.
     expect(
       tandemClaudeDoneCopy("starting", { ...stopped, running: true, remedy: "sign-in" }),

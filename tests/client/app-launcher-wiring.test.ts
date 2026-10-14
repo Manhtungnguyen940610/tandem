@@ -128,9 +128,11 @@ describe("App v1.0 walkthrough wiring (#2198)", () => {
     const body = d.slice(0, d.indexOf("}),\n);"));
     expect(body).toMatch(/resolveWizardAutoOpen\(\{/);
     expect(body).toMatch(/walkthrough: firstRun\.walkthrough,/);
-    // Keyed on the server's launch, so a tab open across a restart gets it back.
-    expect(body).toMatch(
-      /closedThisSession:\s*wizardClosedThisPage \|\|\s*\(firstRun\.launchId !== null && wizardClosedForLaunch === firstRun\.launchId\),/,
+    // Keyed on the server's launch, so a tab open across a restart gets it back
+    // (the latch's own rules: `launch-latch.test.ts`).
+    expect(body).toMatch(/closedThisSession: wizardClosedLatch\.active,/);
+    expect(APP).toMatch(
+      /const wizardClosedLatch = createLaunchLatch\(WIZARD_CLOSED_LAUNCH_KEY, \(\) => firstRun\.launchId\);/,
     );
     expect(body).toMatch(/dismissedForVersion,/);
   });
@@ -140,15 +142,9 @@ describe("App v1.0 walkthrough wiring (#2198)", () => {
     expect(close).toMatch(
       /if \(!firstRun\.walkthrough\) dismissForVersion\(firstRun\.serverVersion\);/,
     );
-    expect(close).toMatch(/markClosedThisLaunch\(\);/);
+    expect(close).toMatch(/wizardClosedLatch\.mark\(\);/);
     // A successful Apply or Keep may have ended it on the server: re-read.
     expect(close).toMatch(/if \(firstRun\.walkthrough\) void firstRun\.refetch\(\);/);
-  });
-
-  it("the page-memory fallback is only for a server that sends no launchId", () => {
-    const mark = fn("markClosedThisLaunch");
-    expect(mark).toMatch(/if \(launch === null\) \{\s*wizardClosedThisPage = true;\s*return;\s*\}/);
-    expect(mark).toMatch(/localStorage\.setItem\(WIZARD_CLOSED_LAUNCH_KEY, launch\)/);
   });
 
   it("Keep also dismisses the first-run rule, and the wizard gets both walkthrough props", () => {
@@ -173,7 +169,7 @@ describe("App v1.0 walkthrough wiring (#2198)", () => {
       /\(ev\.key === WIZARD_DISMISSED_KEY \|\| ev\.key === WIZARD_CLOSED_LAUNCH_KEY\) &&\s*isAutoOpenFirstRun\s*\) \{\s*manuallyReopened = true;/,
     );
     expect(body.indexOf("manuallyReopened = true")).toBeLessThan(
-      body.indexOf("wizardClosedForLaunch = ev.newValue"),
+      body.indexOf("wizardClosedLatch.onStorage(ev)"),
     );
   });
 });

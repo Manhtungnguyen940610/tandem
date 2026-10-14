@@ -131,6 +131,33 @@ export function preselects(
   return record ? record.apply !== "skip" : hasValidTandemEntry(install);
 }
 
+/** The detected install a card or record writes to, by config path. */
+export function findInstallFor(
+  config: IntegrationConfig,
+  existing: readonly ExistingMcpInstall[],
+): ExistingMcpInstall | undefined {
+  const p = recordConfigPath(config);
+  if (p === undefined) return undefined;
+  const key = normalizeConfigPath(p);
+  return existing.find((e) => normalizeConfigPath(e.target.configPath) === key);
+}
+
+/**
+ * A ticked card that is neither the saved setup nor already set up on disk
+ * (#2199): the user is changing something, so the walkthrough's Connect leads
+ * rather than its Keep.
+ */
+export function picksSomethingNew(
+  picked: readonly MergePicked[],
+  existing: readonly ExistingMcpInstall[],
+): boolean {
+  return picked.some((p) => {
+    if (p.fromRecord) return false;
+    const install = findInstallFor(p.config, existing);
+    return install === undefined || !hasValidTandemEntry(install);
+  });
+}
+
 function applyIntentFor(
   config: IntegrationConfig,
   existing: readonly ExistingMcpInstall[],
@@ -139,11 +166,7 @@ function applyIntentFor(
   if (config.kind === "other-mcp") return "skip";
   // A hand-edited entry on disk that failed validation is left alone: apply
   // would replace it with the canonical shape and erase the customisation.
-  const p = recordConfigPath(config);
-  const matched =
-    p === undefined
-      ? undefined
-      : existing.find((e) => normalizeConfigPath(e.target.configPath) === normalizeConfigPath(p));
+  const matched = findInstallFor(config, existing);
   return matched !== undefined && tandemEntryValidationFailed(matched) ? "skip" : "create";
 }
 

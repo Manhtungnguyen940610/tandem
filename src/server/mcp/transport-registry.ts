@@ -44,6 +44,8 @@
  * the normal state of a long-lived desktop client between tool calls.
  */
 
+import { sanitizeForLog } from "../log-sanitize.js";
+
 /** Minimal structural type — the registry only ever closes a session's server. */
 export interface ClosableServer {
   close(): Promise<void>;
@@ -234,16 +236,15 @@ export const CLAUDE_DESKTOP_CLIENT_NAME = "claude-ai";
 
 /**
  * The `clientInfo.name` an `initialize` request carries, or `undefined`.
- * Bounded and printable-only, because it is written to the log, and a log is
- * pasted into bug reports: anything with a control character, or longer than
- * 64, is dropped rather than trimmed.
+ * Written to the log, and a log is pasted into bug reports, so a name that
+ * `sanitizeForLog` would alter (a control character, a bidi override) or
+ * longer than 64 is dropped rather than trimmed — one strip rule, the log's.
  */
 export function readClientName(initialize: unknown): string | undefined {
   const name = (initialize as { params?: { clientInfo?: { name?: unknown } } } | null)?.params
     ?.clientInfo?.name;
   if (typeof name !== "string" || name.length === 0 || name.length > 64) return undefined;
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
-  return /^[^\u0000-\u001f\u007f-\u009f]+$/.test(name) ? name : undefined;
+  return sanitizeForLog(name) === name ? name : undefined;
 }
 
 /**

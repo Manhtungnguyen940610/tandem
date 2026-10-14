@@ -37,7 +37,7 @@ import {
   undetectedDetail,
 } from "../cowork/cowork-helpers.js";
 import { coworkToggleIntegration, type InvokeFn, loadInvoke } from "../cowork/cowork-invoke.js";
-import { hasValidTandemEntry, normalizeConfigPath } from "../hooks/integration-wizard-merge.js";
+import { picksSomethingNew } from "../hooks/integration-wizard-merge.js";
 import type { AiRemedy } from "../hooks/useAiReadiness.svelte.js";
 import {
   autostartWizardDefault,
@@ -65,9 +65,9 @@ import {
   computeDoneHeaderState,
   type PushSupportNote,
   pushSupportNote,
-  TANDEM_CLAUDE_SIGN_IN_LINE,
   type TandemClaudeLive,
   tandemClaudeDoneCopy,
+  tandemClaudeNeedsSignIn,
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
 import PushRoutesInfo from "./PushRoutesInfo.svelte";
@@ -590,23 +590,10 @@ const keepLabel = $derived(
       ? "Keep this setup"
       : "Continue without connecting",
 );
-/** A ticked card that is neither the saved setup nor already set up on disk:
- * the user is changing something, so Connect leads (#2199). */
-const picksSomethingNew = $derived(
-  wizard.picked.some((p) => {
-    if (p.fromRecord) return false;
-    const path = "configPath" in p.config ? p.config.configPath : undefined;
-    const install =
-      path === undefined
-        ? undefined
-        : wizard.existing.find(
-            (i) => normalizeConfigPath(i.target.configPath) === normalizeConfigPath(path),
-          );
-    return install === undefined || !hasValidTandemEntry(install);
-  }),
-);
+// Connect leads once the user ticks something new (#2199).
 const keepIsPrimary = $derived(
-  (wizard.hasSetupToKeep && !picksSomethingNew) || !wizard.existing.some(isSelectable),
+  (wizard.hasSetupToKeep && !picksSomethingNew(wizard.picked, wizard.existing)) ||
+    !wizard.existing.some(isSelectable),
 );
 
 // --- The Claude Code offer for a Claude Desktop setup (#2199) ---------------
@@ -619,9 +606,17 @@ const showClaudeCodeOffer = $derived(
     (offerPhase !== "idle" || (!hasClaudeCodeInstall && cliStatus.presence === "NOT_INSTALLED")),
 );
 
-async function focusOffer(selector: string): Promise<void> {
+/** Re-read detection, ticking a newly found Claude Code card; `fallback` is
+ * the phase when none appeared. The button that was clicked unmounts on a
+ * phase change, so focus moves to the new note rather than falling to <body>
+ * inside the focus-trapped dialog. */
+async function refreshAfterInstall(fallback: "not-detected" | null): Promise<void> {
+  const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+  const next = fresh.some((i) => i.target.kind === "claude-code") ? "installed" : fallback;
+  if (next === null) return;
+  offerPhase = next;
   await tick();
-  offerEl?.querySelector<HTMLElement>(selector)?.focus();
+  offerEl?.querySelector<HTMLElement>('[data-offer-focus="true"]')?.focus();
 }
 
 /** The offer's Install: the click is the opt-in, so the new card arrives
@@ -630,28 +625,19 @@ async function focusOffer(selector: string): Promise<void> {
 async function installFromOffer(): Promise<void> {
   const next = await cliStatus.install();
   if (next === null || next === "NOT_INSTALLED") return;
-  const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
-  offerPhase = fresh.some((i) => i.target.kind === "claude-code") ? "installed" : "not-detected";
-  // The Install button unmounts here; focus must not fall to <body> inside the
-  // focus-trapped dialog.
-  await focusOffer('[data-offer-focus="true"]');
+  await refreshAfterInstall("not-detected");
 }
 
 /** Check again, without starting over: the picks the user made stay. */
 async function recheckFromOffer(): Promise<void> {
   void cliStatus.refetch();
-  const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
-  if (fresh.some((i) => i.target.kind === "claude-code")) {
-    offerPhase = "installed";
-    await focusOffer('[data-offer-focus="true"]');
-  }
+  await refreshAfterInstall(null);
 }
 
 // Opened from the chat panel's offer: once, when the offer is there to show.
 let offerFocusDone = false;
 $effect(() => {
-  if (!focusClaudeCodeOffer || !showClaudeCodeOffer || !offerEl) return;
-  if (untrack(() => offerFocusDone)) return;
+  if (offerFocusDone || !focusClaudeCodeOffer || !showClaudeCodeOffer || !offerEl) return;
   offerFocusDone = true;
   offerEl.scrollIntoView({ block: "nearest" });
   offerEl.querySelector<HTMLElement>("button")?.focus();
@@ -1405,7 +1391,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 {tandemClaudeLine}
               </p>
             {/if}
-            {#if tandemClaudeLine === TANDEM_CLAUDE_SIGN_IN_LINE && onLauncherRemedy}
+            {#if tandemClaudeNeedsSignIn(wizard.tandemClaude, tandemClaudeLive) && onLauncherRemedy}
               <!-- #2199: only while the status says sign-in, so it never fires a
                    relaunch over the start an Apply just began. Through App's
                    one remedy dispatcher (AI_CTA["sign-in"] → restart). -->

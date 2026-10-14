@@ -192,9 +192,9 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
-  const kind =
-    tandemClaudeResume?.kind ??
-    (tandemClaudeGreetingLate ? "greeting" : (pickupKind ?? (claudeCodeOffer ? "offer" : null)));
+  let kind: string | null = tandemClaudeResume?.kind ?? null;
+  if (kind === null && tandemClaudeGreetingLate) kind = "greeting";
+  kind ??= pickupKind ?? (claudeCodeOffer ? "offer" : null);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
