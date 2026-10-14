@@ -8,6 +8,7 @@
  */
 
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
@@ -1715,11 +1716,28 @@ describe("POST /api/launcher/settings (#2195)", () => {
     expect(res.status).toBe(409);
     expect((res.body as { code: string }).code).toBe(LAUNCHER_ERROR_OFF_NOT_SAVED);
     // Any other patch that fails to save is the plain refusal.
+    // (and see the next test for a supervisor that appears mid-save)
     const other = await request(app, "POST", "/api/launcher/settings", {
       nonce: await freshNonce(app),
       patch: { lifetime: "idle" },
     });
     expect((other.body as { code: string }).code).toBe("LAUNCHER_SETTINGS_NEWER");
+  });
+
+  it("an Off saved with no supervisor never claims 'off now', even if one appears mid-save", async () => {
+    const deps = baseDeps(null);
+    fs.writeFileSync(
+      path.join(deps.settingsBase, "launcher-settings.json"),
+      JSON.stringify({ version: 2, startMode: "auto" }),
+    );
+    let calls = 0;
+    const sup = makeFakeSupervisor();
+    const { app } = makeApp({ ...deps, getSupervisor: () => (calls++ === 0 ? null : sup) });
+    const res = await request(app, "POST", "/api/launcher/settings", {
+      nonce: await freshNonce(app),
+      patch: { startMode: "off" },
+    });
+    expect((res.body as { code: string }).code).toBe("LAUNCHER_SETTINGS_NEWER");
   });
 
   it("answers 409 rather than overwriting a file a newer Tandem wrote", async () => {
@@ -1864,14 +1882,22 @@ describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () =>
       const server = app.listen(0, "127.0.0.1", async () => {
         const address = server.address();
         if (typeof address !== "object" || address === null) return reject(new Error("no address"));
-        try {
-          const r = await fetch(`http://127.0.0.1:${address.port}/api/launcher/nonce`, { headers });
-          resolve(r.status);
-        } catch (err) {
-          reject(err);
-        } finally {
+        // node:http, not fetch: undici sets its own `Sec-Fetch-Mode: cors`,
+        // which would hide the mode half of the check.
+        const req = http.get(
+          { host: "127.0.0.1", port: address.port, path: "/api/launcher/nonce", headers },
+          (res) => {
+            res.resume();
+            res.on("end", () => {
+              server.close();
+              resolve(res.statusCode ?? 0);
+            });
+          },
+        );
+        req.on("error", (err) => {
           server.close();
-        }
+          reject(err);
+        });
       });
     });
   }
@@ -1895,6 +1921,12 @@ describe("GET /api/launcher/nonce — a same-origin browser read (#2195)", () =>
     ["a same-origin iframe", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe" }],
     ["a same-origin link", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document" }],
     ["a same-origin GET with no mode or destination", {}],
+    // `dest` is the half a "simplification" would drop: these two say empty.
+    [
+      "a prefetch or ping (no-cors, empty)",
+      { "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "empty" },
+    ],
+    ["a download (navigate, empty)", { "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "empty" }],
   ])("refuses %s, which also carries no Origin", async (_l, rest) => {
     const { app } = makeApp(baseDeps(makeFakeSupervisor()));
     expect(await nonceWith(app, { "Sec-Fetch-Site": "same-origin", ...rest })).toBe(403);
