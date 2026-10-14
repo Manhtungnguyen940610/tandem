@@ -305,6 +305,10 @@ export interface FirstRunNeededResponse {
    * Keep this setup, and closing it does not suppress it for the version —
    * only Keep or a successful Apply does. Absent from older servers. */
   walkthrough?: boolean;
+  /** This server process (#2198): the wizard's "closed it this launch" is
+   * keyed on it, so the walkthrough comes back after a restart. Absent from
+   * older servers. */
+  launchId?: string;
   /** Server `package.json` version — clients key dismissals on this. */
   serverVersion: string;
   /** Required in the body of POST /api/integrations/apply (CSRF mitigation). */

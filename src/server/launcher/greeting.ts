@@ -21,10 +21,9 @@
  * repeated one is Claude acting unasked twice.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 
-import { atomicWriteConfigFile } from "../integrations/storage.js";
+import { atomicWriteConfigFile, readBoundedJsonFileSync } from "../integrations/storage.js";
 import { isV1Release } from "../version-check.js";
 
 export const GREETING_FILE_NAME = "first-run-greeting.json";
@@ -44,38 +43,23 @@ export function greetingPath(base: string): string {
 
 /** The record on disk, `null` when there is none, or `"unreadable"`. */
 function readRecord(base: string): GreetingRecord | null | "unreadable" {
-  const file = greetingPath(base);
-  let raw: string;
-  try {
-    const st = fs.lstatSync(file);
-    if (!st.isFile() || st.size > MAX_GREETING_BYTES) return "unreadable";
-    raw = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+  const raw = readBoundedJsonFileSync(greetingPath(base), MAX_GREETING_BYTES);
+  if (raw === null || raw === "unreadable") return raw;
+  const parsed = raw as Partial<GreetingRecord> | null;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    typeof parsed.version !== "number" ||
+    (parsed.state !== "owed" && parsed.state !== "done")
+  ) {
     return "unreadable";
   }
-  try {
-    const parsed = JSON.parse(raw) as Partial<GreetingRecord> | null;
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof parsed.version !== "number" ||
-      (parsed.state !== "owed" && parsed.state !== "done")
-    ) {
-      return "unreadable";
-    }
-    return {
-      version: parsed.version,
-      state: parsed.state,
-      ...(typeof parsed.greetedOn === "string" ? { greetedOn: parsed.greetedOn } : {}),
-    };
-  } catch {
-    return "unreadable";
-  }
+  return {
+    version: parsed.version,
+    state: parsed.state,
+    ...(typeof parsed.greetedOn === "string" ? { greetedOn: parsed.greetedOn } : {}),
+  };
 }
-
-/** Re-exported: the walkthrough (#2198) and this greeting share one "v1.0". */
-export { isV1Release };
 
 /** Whether Tandem's Claude still owes the greeting. Synchronous; never throws. */
 export function isGreetingOwed(base: string): boolean {

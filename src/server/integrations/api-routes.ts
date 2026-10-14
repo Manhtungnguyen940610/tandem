@@ -213,6 +213,15 @@ export interface IntegrationsRoutesDeps {
   };
 }
 
+/**
+ * This server process, for the wizard's "closed it this launch" (#2198): the
+ * v1.0 walkthrough comes back on the next launch, and for the browser
+ * distribution a launch is a server start, not a tab. Random per process and
+ * nothing else — deliberately NOT the Hocuspocus generation id, which doubles
+ * as the providers' auth token.
+ */
+const LAUNCH_ID = randomBytes(8).toString("hex");
+
 /** How long the apply waits for the launcher's after-setup decision (#2197).
  * The decision is one plan read and one settings read; a lock held by a
  * relaunch's SIGTERM wait can take far longer, and the apply must not. */
@@ -710,22 +719,26 @@ function makeFirstRunHandler(deps: IntegrationsRoutesDeps): Handler {
           needed: false,
           walkthrough: false,
           serverVersion: deps.serverVersion,
+          launchId: LAUNCH_ID,
           confirmationNonce: gate.nonce,
         });
         return;
       }
-      const file = await deps.store.read();
-      const installs = await deps.readExisting();
       // The v1.0 walkthrough (#2198) opens the wizard for everyone, setup or
-      // not; the client keys its "closed it this session" on this, never on
-      // the per-version localStorage dismissal.
+      // not — so while it is owed, neither file needs reading. The client
+      // keys "closed it this launch" on `launchId`, never on the per-version
+      // localStorage dismissal.
       const walkthrough = deps.walkthrough?.isPending() ?? false;
-      const needed =
-        walkthrough || (file.integrations.length === 0 && !hasExistingTandemEntry(installs));
+      let needed = walkthrough;
+      if (!needed) {
+        const [file, installs] = await Promise.all([deps.store.read(), deps.readExisting()]);
+        needed = file.integrations.length === 0 && !hasExistingTandemEntry(installs);
+      }
       res.json({
         needed,
         walkthrough,
         serverVersion: deps.serverVersion,
+        launchId: LAUNCH_ID,
         confirmationNonce: gate.nonce,
       });
     } catch (err) {
@@ -1204,8 +1217,10 @@ function makeWalkthroughConfirmHandler(deps: IntegrationsRoutesDeps): Handler {
       });
       return;
     }
-    const tandemClaude = await decideTandemClaude(deps.onClaudeCodeApplied);
-    res.status(200).json({ ok: true, tandemClaude });
+    // The release is not awaited: Keep closes the wizard at once, and nothing
+    // reads the decision (the status bar shows the start as it happens).
+    void decideTandemClaude(deps.onClaudeCodeApplied);
+    res.status(200).json({ ok: true });
   };
 }
 

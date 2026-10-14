@@ -554,9 +554,7 @@ const hasClaudeCodeInstall = $derived(wizard.existing.some((i) => i.target.kind 
 const keepLabel = $derived(
   wizard.hasSetupToKeep ? "Keep this setup" : "Continue without connecting",
 );
-const keepIsPrimary = $derived(
-  wizard.hasSetupToKeep || !wizard.existing.some((i) => isSelectable(i)),
-);
+const keepIsPrimary = $derived(wizard.hasSetupToKeep || !wizard.existing.some(isSelectable));
 /** A start-mode save in flight: Connect and Keep both ask the launcher to
  * start under the saved mode, so they wait for it. */
 let startModeBusy = $state(false);
@@ -643,6 +641,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
 </script>
 
 {#snippet keepButton(primary: boolean)}
+  {#if walkthrough}
   <button
     type="button"
     class="iw-btn {primary ? 'iw-btn-primary' : 'iw-btn-secondary'}"
@@ -652,6 +651,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
   >
     {keeping ? "Saving…" : keepLabel}
   </button>
+  {/if}
 {/snippet}
 
 {#snippet warningIcon(cls?: string)}
@@ -1451,9 +1451,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Cancel</button>
           {:else if wizard.existing.length === 0}
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Close</button>
-            {#if walkthrough}
-              {@render keepButton(false)}
-            {/if}
+            {@render keepButton(false)}
             <button
               type="button"
               class="iw-btn iw-btn-primary"
@@ -1466,9 +1464,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>
               Not now
             </button>
-            {#if walkthrough}
-              {@render keepButton(keepIsPrimary)}
-            {/if}
+            {@render keepButton(keepIsPrimary)}
             <button
               type="button"
               class="iw-btn {walkthrough && keepIsPrimary ? 'iw-btn-secondary' : 'iw-btn-primary'}"
@@ -1486,9 +1482,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <!-- A target that keeps failing must not trap the user in the
                  walkthrough every launch: Keep writes nothing, so it is safe
                  whatever the apply did (#2198). -->
-            {#if walkthrough}
-              {@render keepButton(false)}
-            {/if}
+            {@render keepButton(false)}
             <button
               type="button"
               class="iw-btn iw-btn-secondary"
@@ -1508,9 +1502,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
           </button>
         {:else if wizard.step === "error"}
           <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Close</button>
-          {#if walkthrough}
-            {@render keepButton(false)}
-          {/if}
+          {@render keepButton(false)}
           <button
             type="button"
             class="iw-btn iw-btn-primary"

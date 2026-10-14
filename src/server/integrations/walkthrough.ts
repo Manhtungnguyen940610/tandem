@@ -22,12 +22,11 @@
  * frozen at module load, so the vitest app-data isolation reaches it.
  */
 
-import fs from "node:fs";
 import path from "node:path";
 
 import { TANDEM_DISABLE_FIRST_RUN_WIZARD_ENV } from "../../shared/constants.js";
 import { isV1Release } from "../version-check.js";
-import { atomicWriteConfigFile } from "./storage.js";
+import { atomicWriteConfigFile, readBoundedJsonFileSync } from "./storage.js";
 
 export const WALKTHROUGH_FILE_NAME = "v1-walkthrough.json";
 /**
@@ -55,31 +54,19 @@ export function walkthroughPath(base: string): string {
 
 /** The record, `null` when there is none, or `"unreadable"`. */
 function readRecord(base: string): WalkthroughRecord | null | "unreadable" {
-  const file = walkthroughPath(base);
-  let raw: string;
-  try {
-    const st = fs.lstatSync(file);
-    if (!st.isFile() || st.size > MAX_WALKTHROUGH_BYTES) return "unreadable";
-    raw = fs.readFileSync(file, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+  const raw = readBoundedJsonFileSync(walkthroughPath(base), MAX_WALKTHROUGH_BYTES);
+  if (raw === null || raw === "unreadable") return raw;
+  const parsed = raw as Partial<WalkthroughRecord> | null;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    typeof parsed.version !== "number" ||
+    typeof parsed.confirmedOn !== "string" ||
+    (parsed.via !== "keep" && parsed.via !== "apply")
+  ) {
     return "unreadable";
   }
-  try {
-    const parsed = JSON.parse(raw) as Partial<WalkthroughRecord> | null;
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      typeof parsed.version !== "number" ||
-      typeof parsed.confirmedOn !== "string" ||
-      (parsed.via !== "keep" && parsed.via !== "apply")
-    ) {
-      return "unreadable";
-    }
-    return { version: parsed.version, confirmedOn: parsed.confirmedOn, via: parsed.via };
-  } catch {
-    return "unreadable";
-  }
+  return { version: parsed.version, confirmedOn: parsed.confirmedOn, via: parsed.via };
 }
 
 /**

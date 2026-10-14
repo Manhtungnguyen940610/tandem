@@ -876,12 +876,17 @@ describe("integrations API routes", () => {
       it("owed: opens the wizard for a user who already has a setup, and says why", async () => {
         await writeClaudeCodeRecord();
         const { seam } = walkthroughSeam();
+        // Owed decides it alone: neither file is read.
+        const readExisting = vi.fn(deps.readExisting);
+        deps.readExisting = readExisting;
         const res = await request(
           makeApp({ ...deps, walkthrough: seam }),
           "GET",
           API_INTEGRATIONS_FIRST_RUN,
         );
         expect(res.body).toMatchObject({ needed: true, walkthrough: true });
+        expect(typeof res.body.launchId).toBe("string");
+        expect(readExisting).not.toHaveBeenCalled();
       });
 
       it("control: the same user with no walkthrough owed is not prompted", async () => {
@@ -920,7 +925,7 @@ describe("integrations API routes", () => {
           serverVersion: "0.0.0-test",
         });
         expect(res.status).toBe(200);
-        expect(res.body).toMatchObject({ ok: true, tandemClaude: "held" });
+        expect(res.body).toEqual({ ok: true });
         expect(state.via).toBe("keep");
         // Nothing else: no integrations file, no skill, no nonce rotation.
         expect(write).not.toHaveBeenCalled();

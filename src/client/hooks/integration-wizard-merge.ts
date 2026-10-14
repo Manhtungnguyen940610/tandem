@@ -43,14 +43,28 @@ export interface MergePicked {
   fromRecord?: true;
 }
 
-/** Same rule as the hook's `tandemEntryValidationFailed`, kept beside its use. */
-function validationFailed(install: ExistingMcpInstall): boolean {
+/**
+ * The single source of truth for "the on-disk tandem entry is hand-edited /
+ * invalid, leave it alone". Shared by `isSelectable` (preselection), the
+ * save's apply intent (`applyIntentFor` → "skip"), and the card's status line
+ * — these three must never diverge or the UI lies about what apply will do.
+ */
+export function tandemEntryValidationFailed(install: ExistingMcpInstall): boolean {
   return install.tandemValidation !== undefined && install.tandemValidation.status !== "valid";
 }
 
 /** A Tandem entry on disk that the wizard would leave in place. */
 export function hasValidTandemEntry(install: ExistingMcpInstall): boolean {
-  return install.tandemEntry !== undefined && !validationFailed(install);
+  return install.tandemEntry !== undefined && !tandemEntryValidationFailed(install);
+}
+
+/** The keychain refs a set of records holds. */
+export function refsOf(records: readonly IntegrationConfig[]): Set<string> {
+  return new Set(
+    records
+      .map((r) => r.tokenSecretRef)
+      .filter((ref): ref is string => typeof ref === "string" && ref.length > 0),
+  );
 }
 
 export function normalizeConfigPath(p: string): string {
@@ -94,11 +108,11 @@ export function recordToConfig(
 }
 
 /**
- * Whether the wizard preselects only what is already set up. True as soon as
- * anything is: a saved claude record or a valid entry on disk. Only a user with
- * neither gets today's "preselect everything connectable".
+ * Something is already set up: a saved Claude record, or a valid entry on
+ * disk. It is what the walkthrough's Keep keeps, and it makes the pre-fill
+ * selective — only a user with neither gets "preselect everything connectable".
  */
-export function preselectsSelectively(
+export function isSomethingSetUp(
   installs: readonly ExistingMcpInstall[],
   records: readonly IntegrationConfig[],
 ): boolean {
@@ -130,7 +144,7 @@ function applyIntentFor(
     p === undefined
       ? undefined
       : existing.find((e) => normalizeConfigPath(e.target.configPath) === normalizeConfigPath(p));
-  return matched !== undefined && validationFailed(matched) ? "skip" : "create";
+  return matched !== undefined && tandemEntryValidationFailed(matched) ? "skip" : "create";
 }
 
 export interface BuildSaveInput {

@@ -21,6 +21,8 @@ const VERSION = "1.0.0";
 
 interface Server {
   walkthrough: boolean;
+  /** A server start: each launch() is a new one. */
+  launch: number;
   confirms: unknown[];
 }
 
@@ -33,6 +35,7 @@ async function serve(context: BrowserContext, server: Server): Promise<void> {
         needed: server.walkthrough,
         walkthrough: server.walkthrough,
         serverVersion: VERSION,
+        launchId: `launch-${server.launch}`,
         confirmationNonce: "e2e-nonce",
       }),
     }),
@@ -55,6 +58,7 @@ async function launch(
 ): Promise<{ context: BrowserContext; page: Page }> {
   // A context made here does not inherit the project's `use`, so the base
   // URL is passed on explicitly.
+  server.launch += 1;
   const context = await browser.newContext({ baseURL: test.info().project.use.baseURL });
   await serve(context, server);
   const page = await context.newPage();
@@ -65,7 +69,7 @@ async function launch(
 test("the walkthrough comes back each launch until Keep, and Keep confirms its version", async ({
   browser,
 }) => {
-  const server: Server = { walkthrough: true, confirms: [] };
+  const server: Server = { walkthrough: true, launch: 0, confirms: [] };
 
   // Launch 1: it opens by itself, offering Keep. Closing it does not write the
   // per-version dismissal that ends the first-run prompt for good.

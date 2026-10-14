@@ -2734,19 +2734,10 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         launching--;
       }
       walkthroughHold = walkthroughOwedAtBoot();
-      if (settings.startMode === "auto" && walkthroughHold) {
-        // The walkthrough hold (#2198): the same standby on-click boots into,
-        // so a message sent meanwhile still starts Claude (#2196) and Start is
-        // one click away; the walkthrough's confirm is what releases it.
-        holdInStandby("awaiting-start");
-        armGapWatch();
-        console.error(
-          "[Launcher] The v1.0 setup walkthrough is pending — Tandem's Claude waits for it",
-        );
-        await buildPlan();
-        return;
-      }
-      if (settings.startMode !== "auto") {
+      // The walkthrough hold (#2198) is the on-click hold: the same standby, so
+      // a message sent meanwhile still starts Claude (#2196) and Start is one
+      // click away; the walkthrough's confirm is what releases it.
+      if (settings.startMode !== "auto" || walkthroughHold) {
         // The boot hold (#2195). The standby is set BEFORE the plan read, so
         // no poll lands on a plain stopped launcher in between; the plan still
         // runs, for `configured` alone — a user with no integration yet reads
@@ -2754,11 +2745,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // wizard writes one (`startAfterSetup`, which holds rather than
         // starts while this standby is set).
         holdInStandby(settings.startMode === "off" ? "off" : "awaiting-start");
-        if (settings.startMode === "on-click") armGapWatch();
+        if (settings.startMode !== "off") armGapWatch();
         console.error(
           settings.startMode === "off"
             ? "[Launcher] Tandem's Claude is turned off — not starting it"
-            : "[Launcher] Tandem's Claude is set to start on click — waiting for Start",
+            : settings.startMode === "on-click"
+              ? "[Launcher] Tandem's Claude is set to start on click — waiting for Start"
+              : "[Launcher] The v1.0 setup walkthrough is pending — Tandem's Claude waits for it",
         );
         await buildPlan();
         return;
@@ -3155,12 +3148,14 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // then reversed. Any other standby, or another mode, holds.
       const releasesWalkthrough =
         heldForWalkthrough && standby === "awaiting-start" && settings.startMode === "auto";
-      if (!releasesWalkthrough) {
-        // The user's own Off: an Apply is not a Start.
-        if (userStopped) return decide("held");
-        // On-click holds boot (#2195), and a first Apply is boot for a Claude
-        // that has never run; idle-stopped is a choice too.
-        if (settings.startMode !== "auto" || standby !== undefined) return decide("held");
+      // Otherwise the user's own Off (an Apply is not a Start), a mode that is
+      // not automatic (on-click holds boot, #2195, and a first Apply is boot
+      // for a Claude that has never run), or any standby (idle is a choice too).
+      if (
+        !releasesWalkthrough &&
+        (userStopped || settings.startMode !== "auto" || standby !== undefined)
+      ) {
+        return decide("held");
       }
       // A tripped breaker (a crash loop, a sign-in stop) or a stop that could
       // not be confirmed (its child may still be alive) is a diagnosis for the

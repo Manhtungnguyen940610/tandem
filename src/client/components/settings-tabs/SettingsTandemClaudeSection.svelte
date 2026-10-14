@@ -227,15 +227,15 @@ const controlsDisabled = $derived(settings === null || readOnly);
 <div class="tc-section" data-testid="settings-modal-tandem-claude">
   <div class="settings-section-label">Tandem's Claude</div>
   <div class="settings-hint" data-testid="settings-modal-tandem-claude-disclosure">
+    Tandem's Claude is a Claude Code session that Tandem runs in the background, so it can answer
+    your chat and comments.
     {#if startModeOnly}
-      Tandem's Claude is a Claude Code session that Tandem runs in the background, so it can answer
-      your chat and comments. Choose when it starts. How long it runs, and this choice too, can be
-      changed any time in Settings → AI Assistant.
+      Choose when it starts. How long it runs, and this choice too, can be changed any time in
+      Settings → AI Assistant.
     {:else}
-      Tandem's Claude is a Claude Code session that Tandem runs in the background, so it can answer
-      your chat and comments. Once started, it keeps running in the background until Tandem itself
-      stops, you turn it off, or — if you choose below — it has been idle for a while. An idle stop
-      keeps its conversation: starting it again picks up where it left off.
+      Once started, it keeps running in the background until Tandem itself stops, you turn it off,
+      or — if you choose below — it has been idle for a while. An idle stop keeps its conversation:
+      starting it again picks up where it left off.
     {/if}
   </div>
 

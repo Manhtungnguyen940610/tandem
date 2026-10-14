@@ -51,11 +51,12 @@ import { MCP_BASE_URL } from "../utils/backend-ports.js";
 import { responseErrorMessage } from "../utils/response-error.js";
 import {
   buildSaveFile,
-  hasValidTandemEntry,
+  isSomethingSetUp,
   matchRecord,
   preselects,
-  preselectsSelectively,
   recordToConfig,
+  refsOf,
+  tandemEntryValidationFailed,
 } from "./integration-wizard-merge.js";
 
 export type WizardStep = "connect" | "applying" | "done" | "error";
@@ -129,14 +130,23 @@ export interface IntegrationWizardState {
   cleanupUnsavedSecrets(): Promise<void>;
 }
 
+// The single source of truth for a hand-edited entry lives with the merge that
+// turns it into `apply: "skip"`; re-exported for the card's status line.
+export { tandemEntryValidationFailed };
+
 /**
- * The single source of truth for "the on-disk tandem entry is hand-edited /
- * invalid, leave it alone". Shared by `isSelectable` (preselection), `save()`
- * (apply: "skip"), and the card's status line — these three must never
- * diverge or the UI lies about what apply will do.
+ * The message for a fetch that never reached the server — or null for any
+ * other error. A network failure (server not up yet — common on first launch)
+ * rejects with a TypeError whose message varies by engine: Chromium "Failed to
+ * fetch", WKWebView (Tauri macOS) "Load failed", Firefox "NetworkError when
+ * attempting to fetch resource". Gated on the message so a genuine programming
+ * TypeError falls through to its real text instead of being mislabeled
+ * "server unreachable".
  */
-export function tandemEntryValidationFailed(install: ExistingMcpInstall): boolean {
-  return install.tandemValidation !== undefined && install.tandemValidation.status !== "valid";
+function networkErrorMessage(err: unknown): string | null {
+  return err instanceof TypeError && /fetch|load failed|network/i.test(err.message)
+    ? "Could not reach the Tandem server. Make sure Tandem is running, then try again."
+    : null;
 }
 
 /**
@@ -274,6 +284,22 @@ export function createIntegrationWizard(
     detecting = false;
   };
 
+  /** The saved setup (#2198), or a throw carrying the message to show. */
+  const readSavedSetup = async (): Promise<IntegrationsFile> => {
+    const res = await fetchFn(`${baseUrl}${API_INTEGRATIONS}`);
+    if (!res.ok) {
+      throw new Error(
+        await responseErrorMessage(
+          res,
+          `Could not read your saved Tandem setup (HTTP ${res.status}).`,
+        ),
+      );
+    }
+    const saved = (await res.json()) as IntegrationsFile | null;
+    if (!Array.isArray(saved?.integrations)) throw new Error(UNREADABLE_SAVED_SETUP);
+    return saved;
+  };
+
   const begin = async () => {
     const myGen = ++beginGen;
     detecting = true;
@@ -283,20 +309,11 @@ export function createIntegrationWizard(
       // The saved setup is read alongside detection (#2198). A failed read
       // stops the wizard rather than falling back to detection alone: a save
       // built without it is the whole-file clobber the merge exists to prevent.
-      const [res, savedRes] = await Promise.all([
+      const [res, saved] = await Promise.all([
         fetchFn(`${baseUrl}${API_INTEGRATIONS_EXISTING}`),
-        fetchFn(`${baseUrl}${API_INTEGRATIONS}`),
+        readSavedSetup(),
       ]);
       if (myGen !== beginGen) return; // a newer begin() ran; drop this response
-      if (!savedRes.ok) {
-        const message = await responseErrorMessage(
-          savedRes,
-          `Could not read your saved Tandem setup (HTTP ${savedRes.status}).`,
-        );
-        if (myGen !== beginGen) return;
-        setError(message);
-        return;
-      }
       if (!res.ok) {
         // #1792: a downgraded `integrations.json` answers 409 with an
         // actionable `message`; without this the wizard died on a bare status
@@ -310,45 +327,27 @@ export function createIntegrationWizard(
         return;
       }
       const body = (await res.json()) as { installs: ExistingMcpInstall[] };
-      const saved = (await savedRes.json()) as IntegrationsFile;
       if (myGen !== beginGen) return;
-      if (!Array.isArray(saved?.integrations)) {
-        setError(UNREADABLE_SAVED_SETUP);
-        return;
-      }
+      const records = saved.integrations;
       existing = body.installs;
-      savedRecords = saved.integrations;
-      persistedRefs = new Set(
-        saved.integrations
-          .map((r) => r.tokenSecretRef)
-          .filter((ref): ref is string => typeof ref === "string" && ref.length > 0),
-      );
-      originalRefs = new Map(saved.integrations.map((r) => [r.id, r.tokenSecretRef]));
+      savedRecords = records;
+      persistedRefs = refsOf(records);
+      originalRefs = new Map(records.map((r) => [r.id, r.tokenSecretRef]));
       deselected = new Set();
       // Preselect as soon as detection resolves — the connect screen renders
       // cards pre-checked, no separate pick step. With nothing set up that is
       // everything connectable; otherwise what is set up (#2198), each card
       // built from its saved record.
-      const selective = preselectsSelectively(body.installs, saved.integrations);
-      picked = body.installs
-        .filter(isSelectable)
-        .filter((i) => preselects(i, matchRecord(i, saved.integrations, body.installs), selective))
-        .map((i) => cardFor(i, saved.integrations, body.installs))
-        .filter((p): p is PickedIntegration => p !== null);
+      const selective = isSomethingSetUp(body.installs, records);
+      picked = body.installs.filter(isSelectable).flatMap((install) => {
+        const record = matchRecord(install, records, body.installs);
+        if (!preselects(install, record, selective)) return [];
+        const card = cardFor(install, record);
+        return card ? [card] : [];
+      });
     } catch (err) {
       if (myGen !== beginGen) return;
-      // A network failure (server not up yet — common on first launch) rejects
-      // with a TypeError whose message varies by engine: Chromium "Failed to
-      // fetch", WKWebView (Tauri macOS) "Load failed", Firefox "NetworkError
-      // when attempting to fetch resource". Match those so we surface an
-      // actionable message — but gate on the message so a genuine programming
-      // TypeError (e.g. a structural error in the preselect chain above) falls
-      // through to its real text instead of being mislabeled "server unreachable".
-      if (err instanceof TypeError && /fetch|load failed|network/i.test(err.message)) {
-        setError("Could not reach the Tandem server. Make sure Tandem is running, then try again.");
-        return;
-      }
-      setError(err instanceof Error ? err.message : String(err));
+      setError(networkErrorMessage(err) ?? (err instanceof Error ? err.message : String(err)));
     } finally {
       // Only the winning generation clears the loading flag — a superseded
       // begin() finishing late must not hide the newer run's loading state.
@@ -379,10 +378,8 @@ export function createIntegrationWizard(
   /** A detected install's card: from its saved record when it has one. */
   const cardFor = (
     install: ExistingMcpInstall,
-    records: readonly IntegrationConfig[],
-    installs: readonly ExistingMcpInstall[],
+    record: IntegrationConfig | undefined,
   ): PickedIntegration | null => {
-    const record = matchRecord(install, records, installs);
     if (!record) return detectedToPicked(install);
     return {
       id: record.id,
@@ -394,7 +391,7 @@ export function createIntegrationWizard(
   };
 
   const pickedForInstall = (install: ExistingMcpInstall): PickedIntegration | null =>
-    cardFor(install, savedRecords, existing);
+    cardFor(install, matchRecord(install, savedRecords, existing));
 
   const submitSecret = async (target: PickedIntegration, secret: string) => {
     const ref = makeSecretRef(target.id);
@@ -436,12 +433,9 @@ export function createIntegrationWizard(
   const cleanupStoredSecrets = async (): Promise<void> => {
     // Only refs minted this session: a saved one is still referenced by the
     // file on disk, and deleting it is the SECRET_MISSING orphan (#2198).
-    const storedRefs = picked
-      .map((p) => p.config.tokenSecretRef)
-      .filter(
-        (ref): ref is string =>
-          typeof ref === "string" && ref.length > 0 && !persistedRefs.has(ref),
-      );
+    const storedRefs = [...refsOf(picked.map((p) => p.config))].filter(
+      (ref) => !persistedRefs.has(ref),
+    );
     await Promise.all(storedRefs.map((ref) => keychainBackend.delete(ref)));
   };
 
@@ -483,21 +477,10 @@ export function createIntegrationWizard(
     // overwritten by the copy read at begin().
     let saved: IntegrationsFile;
     try {
-      const savedRes = await fetchFn(`${baseUrl}${API_INTEGRATIONS}`);
-      if (!savedRes.ok) {
-        const message = await responseErrorMessage(
-          savedRes,
-          `Could not read your saved Tandem setup (HTTP ${savedRes.status}).`,
-        );
-        await cleanupStoredSecrets();
-        setError(message);
-        return;
-      }
-      saved = (await savedRes.json()) as IntegrationsFile;
-      if (!Array.isArray(saved?.integrations)) throw new Error(UNREADABLE_SAVED_SETUP);
+      saved = await readSavedSetup();
     } catch (err) {
       await cleanupStoredSecrets();
-      setError(err instanceof Error ? err.message : String(err));
+      setError(networkErrorMessage(err) ?? (err instanceof Error ? err.message : String(err)));
       return;
     }
     // Apply intent per card (a hand-edited entry that failed validation is
@@ -534,11 +517,7 @@ export function createIntegrationWizard(
       persisted = true;
       // The new file holds these refs now; the ones a new token replaced are
       // referenced by nothing, so they go — only now, never before the persist.
-      persistedRefs = new Set(
-        file.integrations
-          .map((r) => r.tokenSecretRef)
-          .filter((ref): ref is string => typeof ref === "string" && ref.length > 0),
-      );
+      persistedRefs = refsOf(file.integrations);
       for (const ref of superseded) void keychainBackend.delete(ref);
       const persistBody = (await persistRes.json()) as {
         ids: string[];
@@ -595,12 +574,7 @@ export function createIntegrationWizard(
       }
       return true;
     } catch (err) {
-      keepError =
-        err instanceof TypeError
-          ? "Could not reach the Tandem server. Make sure Tandem is running, then try again."
-          : err instanceof Error
-            ? err.message
-            : String(err);
+      keepError = networkErrorMessage(err) ?? (err instanceof Error ? err.message : String(err));
       return false;
     }
   };
@@ -665,7 +639,7 @@ export function createIntegrationWizard(
       return keychainUnavailable;
     },
     get hasSetupToKeep() {
-      return savedRecords.some((r) => r.kind !== "other-mcp") || existing.some(hasValidTandemEntry);
+      return isSomethingSetUp(existing, savedRecords);
     },
     get keepError() {
       return keepError;

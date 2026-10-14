@@ -8,10 +8,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildSaveFile,
+  isSomethingSetUp,
   type MergePicked,
   matchRecord,
   preselects,
-  preselectsSelectively,
   recordToConfig,
 } from "../../src/client/hooks/integration-wizard-merge";
 import {
@@ -107,13 +107,13 @@ describe("pre-fill", () => {
 
   it("nothing set up: everything connectable is preselected, as before", () => {
     const install = ccInstall();
-    expect(preselectsSelectively([install], [])).toBe(false);
+    expect(isSomethingSetUp([install], [])).toBe(false);
     expect(preselects(install, undefined, false)).toBe(true);
   });
 
   it("set up: a saved record decides for itself, and skip is the user's own 'disabled'", () => {
     const install = ccInstall();
-    expect(preselectsSelectively([install], [ccRecord()])).toBe(true);
+    expect(isSomethingSetUp([install], [ccRecord()])).toBe(true);
     expect(preselects(install, ccRecord(), true)).toBe(true);
     expect(preselects(install, ccRecord({ apply: "skip" }), true)).toBe(false);
   });
@@ -124,13 +124,13 @@ describe("pre-fill", () => {
       tandemEntry: { type: "http", url: "http://127.0.0.1:3479/mcp" },
       tandemValidation: { status: "valid" },
     } as never);
-    expect(preselectsSelectively([bare, withEntry], [])).toBe(true);
+    expect(isSomethingSetUp([bare, withEntry], [])).toBe(true);
     expect(preselects(bare, undefined, true)).toBe(false);
     expect(preselects(withEntry, undefined, true)).toBe(true);
   });
 
   it("an other-mcp record alone does not make the pre-fill selective", () => {
-    expect(preselectsSelectively([ccInstall()], [otherMcp])).toBe(false);
+    expect(isSomethingSetUp([ccInstall()], [otherMcp])).toBe(false);
   });
 });
 

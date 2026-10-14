@@ -77,6 +77,7 @@ describe("createFirstRunNeeded", () => {
           needed: true,
           walkthrough: true,
           serverVersion: "1.0.0",
+          launchId: "launch-1",
           confirmationNonce: "n",
         }) as unknown as Response;
       }
@@ -86,9 +87,11 @@ describe("createFirstRunNeeded", () => {
     await new Promise((r) => setTimeout(r, 0));
     flushSync();
     expect(state.walkthrough).toBe(true);
+    expect(state.launchId).toBe("launch-1");
     await state.refetch();
     flushSync();
     expect(state.walkthrough).toBe(false);
+    expect(state.launchId).toBeNull();
   });
 
   it("an older server (no walkthrough field) reads as no walkthrough", async () => {

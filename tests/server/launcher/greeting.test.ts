@@ -13,9 +13,9 @@ import {
   armFirstRunGreeting,
   greetingPath,
   isGreetingOwed,
-  isV1Release,
   markGreeted,
 } from "../../../src/server/launcher/greeting.js";
+import { isV1Release } from "../../../src/server/version-check.js";
 
 let base: string;
 

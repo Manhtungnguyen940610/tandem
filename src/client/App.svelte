@@ -809,12 +809,16 @@ $effect(() => {
 });
 
 const WIZARD_DISMISSED_KEY = "tandem:wizard-dismissed";
-/** This tab closed the auto-opened wizard (#2198): not again until the next
- * launch. `sessionStorage`, so a reload of the browser tab does not bring it
- * back; memory alone when storage is unavailable. */
-const WIZARD_CLOSED_SESSION_KEY = "tandem:wizard-closed-this-session";
+/** The auto-opened wizard was closed during this server launch (#2198): not
+ * again until the next one. Keyed on the server's `launchId`, so "next launch"
+ * means a server start in the browser distribution too (a tab that stays open
+ * across a restart gets it back), and in localStorage, so every tab agrees.
+ * Memory alone holds it when storage is unavailable. */
+const WIZARD_CLOSED_LAUNCH_KEY = "tandem:wizard-closed-for-launch";
 let dismissedForVersion = $state<string | null>(readDismissed());
-let wizardClosedThisSession = $state(readClosedThisSession());
+let wizardClosedForLaunch = $state<string | null>(readClosedForLaunch());
+/** An older server sends no launchId: then this page's memory is the launch. */
+let wizardClosedThisPage = $state(false);
 let manuallyReopened = $state(false);
 
 function readDismissed(): string | null {
@@ -825,18 +829,23 @@ function readDismissed(): string | null {
   }
 }
 
-function readClosedThisSession(): boolean {
+function readClosedForLaunch(): string | null {
   try {
-    return sessionStorage.getItem(WIZARD_CLOSED_SESSION_KEY) === "1";
+    return localStorage.getItem(WIZARD_CLOSED_LAUNCH_KEY);
   } catch {
-    return false;
+    return null;
   }
 }
 
-function markClosedThisSession(): void {
-  wizardClosedThisSession = true;
+function markClosedThisLaunch(): void {
+  const launch = firstRun.launchId;
+  if (launch === null) {
+    wizardClosedThisPage = true;
+    return;
+  }
+  wizardClosedForLaunch = launch;
   try {
-    sessionStorage.setItem(WIZARD_CLOSED_SESSION_KEY, "1");
+    localStorage.setItem(WIZARD_CLOSED_LAUNCH_KEY, launch);
   } catch {
     // Storage unavailable — memory alone holds it for this page.
   }
@@ -871,7 +880,9 @@ const isAutoOpenFirstRun = $derived(
     walkthrough: firstRun.walkthrough,
     serverVersion: firstRun.serverVersion,
     dismissedForVersion,
-    closedThisSession: wizardClosedThisSession,
+    closedThisSession:
+      wizardClosedThisPage ||
+      (firstRun.launchId !== null && wizardClosedForLaunch === firstRun.launchId),
   }),
 );
 /** The version the walkthrough is owed on, for the wizard's Keep. */
@@ -898,12 +909,13 @@ function closeIntegrationWizard(): void {
   // session alone.
   if (isAutoOpenFirstRun && firstRun.serverVersion !== null) {
     if (!firstRun.walkthrough) dismissForVersion(firstRun.serverVersion);
-    markClosedThisSession();
+    markClosedThisLaunch();
   }
   manuallyReopened = false;
-  // Re-read: a successful Apply or Keep has just ended the walkthrough on the
-  // server, and a later Settings → Reopen must not show its copy again.
-  void firstRun.refetch();
+  // Re-read: a successful Apply or Keep may have just ended the walkthrough on
+  // the server, and a later Settings → Reopen must not show its copy again.
+  // Only a walkthrough can change the answer this way.
+  if (firstRun.walkthrough) void firstRun.refetch();
 }
 
 /** Keep this setup succeeded (#2198). Also dismiss the first-run rule, or a
@@ -920,6 +932,9 @@ $effect(() => {
   const onStorage = (ev: StorageEvent) => {
     if (ev.key === WIZARD_DISMISSED_KEY) {
       dismissedForVersion = ev.newValue;
+    }
+    if (ev.key === WIZARD_CLOSED_LAUNCH_KEY) {
+      wizardClosedForLaunch = ev.newValue;
     }
   };
   window.addEventListener("storage", onStorage);

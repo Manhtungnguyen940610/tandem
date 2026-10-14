@@ -15,8 +15,6 @@ import {
   TANDEM_FORCE_V1_WALKTHROUGH_ENV,
   walkthroughPath,
 } from "../../../src/server/integrations/walkthrough.js";
-import { isV1Release as greetingIsV1 } from "../../../src/server/launcher/greeting.js";
-import { isV1Release } from "../../../src/server/version-check.js";
 import { TANDEM_DISABLE_FIRST_RUN_WIZARD_ENV } from "../../../src/shared/constants.js";
 
 let base: string;
@@ -84,13 +82,4 @@ describe("isWalkthroughPending", () => {
     fs.mkdirSync(walkthroughPath(base));
     expect(isWalkthroughPending(base, "1.0.0", NO_ENV)).toBe(false);
   });
-});
-
-describe("one v1.0 for the greeting and the walkthrough", () => {
-  it.each(["1.0.0", "1.4.2", "2.0.0", "0.29.0", "1.0.0-rc.1", "0.0.0-dev", ""])(
-    "%s answers the same in both",
-    (v) => {
-      expect(greetingIsV1(v)).toBe(isV1Release(v));
-    },
-  );
 });
