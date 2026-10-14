@@ -11,14 +11,15 @@ It found three kinds of problem:
 - **Stale facts the code contradicts.** Reviewer agents carried wrong rules, several tool
   descriptions contradicted their handlers, and the shipped skill described tools that only
   returned an error.
-- **Accretion.** `CLAUDE.md` had grown to 77.7 KB, mostly issue history wrapped around rules that
-  were still valid.
+- **Accretion.** `CLAUDE.md` had grown to 77.7 KB at `b9b3d062` (73 KB at the audited commit),
+  mostly issue history wrapped around rules that were still valid. After #2220 it is 64 KB.
 - **Structural waste.** Three deprecated tool stubs were still registered, and six `diverge-*`
   agents were copies of one prompt.
 
-## What shipped
+## What the audit produced
 
-Four stacked PRs, one per surface (decision D9), plus the PR that adds this file:
+Four stacked PRs, one per surface (decision D9), merged in stack order, plus the PR that adds
+this file:
 
 | PR | Surface | Review record |
 |---|---|---|
@@ -64,10 +65,12 @@ commits and are not maintained.
   their parameter text, a check on error-code vocabulary in descriptions, shared constants for the
   heading rule and the inbox-authority rule, and shortening the skill's new force-open reason.
   `docs/decisions.md` is history and was not edited.
-- **Reviews of the shipped PRs** found nothing blocking. One non-blocking fix reached beyond its
-  PR: the note-loss windows. The corrections below still say "the one loss window is a failed
-  envelope flush"; `docs/security.md` and `CLAUDE.md` now name three — two for a forced open (a
-  failed envelope flush, a store that never wired) and a scratchpad's source-view commit (#2219).
+- **Reviews of the PRs raised blocking findings on #2220 and #2223**; all were fixed in the PR
+  (see each review record). Two review fixes changed the note-loss windows the corrections below
+  describe ("The one loss window is a failed envelope flush"): #2220's review found a scratchpad's
+  source-view commit (#2219), and #2224's added a store that never wired, editing `CLAUDE.md` and
+  `docs/security.md` from the skill PR. Both now name three windows, two of them in
+  `clearAndReload` (a failed envelope flush, a store that never wired).
 
 ## Decisions (Bryan, 2026-10-13)
 
@@ -289,6 +292,8 @@ Should-fix items and nits are folded in where they apply.
 
 ## Appendix A — md:H20 replacement for the CLAUDE.md security bullet (~line 261)
 
+Appendix A is the plan's text. The bullet that shipped in `CLAUDE.md` also carries two void conditions added in #2220's review: #1488 is acceptable only while `/health` leaks the same fact, and #2027 is void if the cross-platform origin matrix becomes verifiable.
+
 ```
 - **One security finding is open, one is fixed-but-unverified, and eight are accepted rather than fixed.** Each is a live code condition, and several are voided by a change that looks like hardening, so read its bound in [docs/security.md](docs/security.md#open-findings) before assuming it covers what you are about to change. That register holds the bounds and exploit detail, kept out of this file on purpose because it is auto-loaded into sessions that read text from outside the project, and new findings are filed there as well as in the tracker — open: #1884 (the channel permission relay serves an approval prompt's `description` to any local caller; its LAN half is unreachable from another machine while the non-loopback bind ships dark). **Fixed but unverified:** #1420 (the middle-click half was smoked on Windows only; its closed issue does not mean macOS or Linux were checked). Verified or closed, not counted: #1745/#1746 (executed on the v0.25.0 tag build; tracker #1829; one green run says nothing about certificate expiry) and #1292. **Accepted (bounded):** #1654 caller-named write destinations (revisit 2027-02-28 via #1671; void if `tandem_open`'s resolver gains root containment or any tool or route takes a caller-named write leaf rather than a directory; CodeQL alert 16 stays open and must not be dismissed), #1599 the boot-sweep / `setup --apply` config race (revisit 2027-02-24; `tests/docs/config-writer-set-claims.test.ts` pins its scope, so adding a config writer widens it), #1609 the `runDoctor` path reads (bounded by its input, process environment, so UNC rejection is still required on document- and LLM-supplied paths), #1488 the `/.well-known/oauth-protected-resource/mcp` presence oracle (an exception to the DNS-rebinding rule above: its two handlers sit before `authMiddleware` with no Host check; its `Access-Control-Allow-Origin: *` is not the mechanism, so removing it closes nothing), #1666 `tandem_open`'s resolver has no root containment (it cannot create files; void if it gains that ability or Tandem gains an opened-workspace notion), #2027 `POST /api/save`'s `allowImageLoss` carries no proof of user intent (void if `/api/save` gains another destructive flag behind the same origin gate or the flag reaches beyond image-bearing `.docx`), and the two bind-level findings #1952 (`wakeUrl` hardcodes `127.0.0.1` under a non-loopback bind) and #1906 (`enforceLoopbackMutation` covers `/api` only, so a token-holding LAN peer could reach mutating MCP tools through `POST /mcp`), both bounded by ADR-056's `LAN_BIND_ENABLED = false` rather than a date and void if it flips or anything else makes the server listen beyond this computer — #1906's hole-or-intended decision is still owed as ADR-056's re-enable item 2. `tests/docs/security-findings-claims.test.ts` pins this bullet against the register but cannot see the tracker, so reconciling against GitHub is human review.
 ```
@@ -303,7 +308,7 @@ Should-fix items and nits are folded in where they apply.
 
 ## Appendix C — the audit report as written (against `2331a28e`)
 
-Kept as written, apart from one correction: the `stateless-transport-claims` row in the CLAUDE.md slice's test table said that test scans only `CLAUDE.md` and `AGENTS.md`; it scans every `docs/**/*.md` too.
+This is the audit as first written, before re-verification, and it is **not** current guidance. Its proposed hunks are labelled without the `md:`/`tool:`/`sk:`/`dc:` prefixes, and their "+" text must never be quoted as a rule: the corrections above decide what was applied. Three hunks are marked inline because their text contradicts current rules: md:H5 and md:H28 (the pre-#1521 licence rule) and md:H20 (the old open set; see F8 in the findings table). One fact is corrected in place: the `stateless-transport-claims` row in the CLAUDE.md slice's test table said that test scans only `CLAUDE.md` and `AGENTS.md`; it scans every `docs/**/*.md` too.
 
 ### Prompt audit — tandem @ 2331a28e (2026-10-13)
 
@@ -462,7 +467,7 @@ Critical Rule numbers are cited about 500 times across `src/`, `docs/`, `.claude
 | F5 | CLAUDE.md:140, :227 | "eighteen mocking test files" / "eighteen test files `vi.mock` it" | G2 Volatile | `grep vi.mock(...file-watcher` finds 23 files under tests/. The "four `src` importers" claim is correct. | High | rewrite (no count) | none |
 | F6 | CLAUDE.md:26 | "`grep 'surrogates: \"ignore\"' src/` returns only three literals" | G2 Volatile | It returns 6 lines: 2 code literals (docx-capture.ts:204, docx-comments.ts:845) and 4 comments. The list of four exempt callers is still correct. | High | rewrite | none |
 | F7 | CLAUDE.md:322, :291; AGENTS.md:17 | "The pre-push hook runs biome + the full vitest suite + `cargo test`" / "pre-push hook is biome + vitest + `cargo test`" | G2 Volatile | `.husky/pre-push` also runs `npm run typecheck:tests`, which has been there since about 2026-08-25. AGENTS.md:17 was written 2026-09-10 and still omits it. | High | rewrite | none |
-| F8 | CLAUDE.md:261 (and docs/security.md register) | "Three security findings are open … open: #1952 … #1906" | G2 Volatile (tracker contradicts) | `gh` shows #1906 CLOSED/COMPLETED on 2026-09-17 and #1952 CLOSED/NOT_PLANNED on 2026-10-05. The register agrees with CLAUDE.md, so the pinning test is green. Re-deciding security posture is Bryan's call. | High | **flag**: reconcile `docs/security.md`, then change the count word | security-findings-claims (the count word must follow the register) |
+| F8 | CLAUDE.md:261 (and docs/security.md register) | "Three security findings are open … open: #1952 … #1906" | G2 Volatile (tracker contradicts) | `gh` shows #1906 CLOSED/COMPLETED on 2026-09-17 and #1952 CLOSED/NOT_PLANNED on 2026-10-05. The register agrees with CLAUDE.md, so the pinning test is green. Re-deciding security posture is Bryan's call. | High | **flag**: reconcile `docs/security.md`, then change the count word. **Resolved by D1:** #1906 and #1952 stay in the register as accepted (bounded) under ADR-056; a closed issue does not mean the hole is fixed. | security-findings-claims (the count word must follow the register) |
 | F9 | CLAUDE.md:261 | 7,864-byte single line, e.g. "**#1745/#1746 … are NO LONGER unverified: they EXECUTED on the v0.25.0 tag build** (run `34005276975` …", "recorded in no document at all until 2026-09-11", "Two of these were listed here as OPEN until 2026-09-11" | G2 History narrative + duplicated content (Time-sensitive row) | Everything is in `docs/security.md#open-findings`. CLAUDE.md even says "The exploit detail deliberately lives there". Keeping two copies is exactly how F8 happened. | Medium | rewrite to a ~2 KB bullet that satisfies every pin (Hunk H20). Optional stronger fix: replace it with a pointer and drop the CLAUDE.md half of the test (see note under H20). | security-findings-claims. H20 was checked offline against the test's own parsing logic and passes all six specs. |
 | F10 | CLAUDE.md:258 | "It was nine until `save`, `convert` and `apply-changes` gained … `/api/save` was reachable unconditionally …" | G2 History narrative | The rules worth keeping: the six ungated routes, the `rotate-token` second layer, no origin gate on `open`/`rotate-token`, and the simple-request CSRF hazard. The rest is incident history. | Medium | rewrite | loopback-gate-claims (passage marker, six route names, `**Six**`; kept) |
 | F11 | CLAUDE.md:21 and file-wide | "These WILL break things if violated:"; 242 `**bold**` spans in 331 lines | G1a Pressure language | When almost everything is bold, the bold stops marking anything. Current models follow plain statements closely, so the shouted register leads to over-application. | Medium | rewrite the header; the hunks below use normal emphasis | none |
@@ -524,6 +529,9 @@ One finding per hunk. Each `-` line is shortened to its opening words and the hu
 -6. **`tandem_edit` rejects heading markup ranges.** A range whose **start, end or interior** overlaps ...
 +6. **`tandem_edit` rejects heading markup ranges.** A range whose start, end or interior overlaps a heading prefix (e.g. `## `) returns INVALID_RANGE — target text content only, or split the edit at the heading boundary. The exclusive end is not exclusive here: a `to` equal to the first character of a prefix is refused, because it resolves into the heading block. The interior check (`rejectHeadingInterior`) applies to every caller whose span is eventually rewritten, because a stored `suggestedText` is a rewrite deferred to Accept that replaces the stored flat span verbatim — a suggestion stepping over a prefix deletes the heading, and `snapshotContradicts` cannot object. The carriers: `tandem_edit`; the suggestion arm of both annotation creators (`YDocStore.anchorRange({purpose: "suggestion"})` for a `tandem_comment` with `suggestedText`, and `local-model/tools.ts`'s `"replacement"` kind); and the reply seam's `{kind: "replacement"}` arm (`replyForClaude`) plus `editPendingAnnotation` (`tandem_editAnnotation`'s `newText`), which share `screenSuggestionSpan` over the record's live span (`refreshRange` first, the stored range only when the anchor is dead). That screen's refusal names a `cause` (`"heading" | "unresolvable"`) because `anchoredRange` fails in more ways than a heading. Plain comments keep the endpoint-only rule — a `tandem_comment` may span a heading — and both creators take the arm as a required discriminant, so a new caller cannot default into the wrong half. See [docs/architecture.md](docs/architecture.md).
 ```
+
+> **Not applied (md:H5, obsolete).** This is the pre-#1521 Rule 9. The current rule is the
+> opposite: the licence is one AI-surface refusal, never a per-tool or per-route gate.
 
 **H5 (F15), CLAUDE.md:31**
 ```diff
@@ -645,6 +653,8 @@ One finding per hunk. Each `-` line is shortened to its opening words and the hu
 +- **`tests/` is typechecked only by `npm run typecheck:tests`** (run by pre-push and CI's `check`; `npm run typecheck` does not chain it). Three configs own it — `tsconfig.tests.{node,client,e2e}.json` — and they include whole directories, never a suffix glob such as `*.test.ts` (the one sanctioned exception is `tests/*.test.ts`), because `tsc` fails closed only on a totally empty input set and a partial glob silently checks less. The node config excludes `**/*.svelte.ts`, which the client config owns because rune cells need a program that imports svelte. `tests/scripts/typecheck-tests-wiring.test.ts` pins the CI step, the exact package.json script, the `strict` family and the include shapes. `tests/tauri-driver/` is deliberately typechecked by nothing (its workflow is `workflow_dispatch`-only); re-check it by hand with `npm ci --prefix tests/tauri-driver && npx tsc -p tests/tauri-driver/tsconfig.json --noEmit`.
 ```
 
+> **Superseded by Appendix A (md:H20).** Its open set is wrong: see F8 in the findings table.
+
 **H20 (F9), CLAUDE.md:261.** I replicated the test's parsing logic in memory and ran it on this text: the open set is {1952, 1884, 1906}, nothing overlaps, every register ref is present, the count words match, and nothing open is filed as Accepted. It is about 2.0 KB instead of 7.9 KB. It still asserts #1952 and #1906 as open; per F8, reconcile `docs/security.md` first and then move the count word.
 ```diff
 @@ -261 +261 @@
@@ -739,6 +749,8 @@ This needs a companion edit in `.claude/skills/release/SKILL.md`. Without it, th
 -- Git hooks: `pre-commit` runs lint-staged (ESLint + Biome + a semantic-token scan); `pre-push` runs `biome check .`, the **full** Vitest suite, and `cargo test`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the one-time setup `cargo test` needs — a fresh clone cannot push without it.
 +- Git hooks: `pre-commit` runs lint-staged (ESLint + Biome + a semantic-token scan); `pre-push` runs `biome check .`, `npm run typecheck:tests`, the **full** Vitest suite, and `cargo test`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the one-time setup `cargo test` needs — a fresh clone cannot push without it.
 ```
+
+> **Not applied (md:H28, obsolete).** Same pre-#1521 rule as md:H5.
 
 **H28 (F2), AGENTS.md:31**
 ```diff
