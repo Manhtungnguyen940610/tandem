@@ -254,16 +254,19 @@ const alreadyPushedField = z
     "This item was also emitted as a real-time channel event. A hint that you may have already responded — never proof. The server cannot confirm you received it, and the flag is dropped when the event leaves the channel buffer, so its absence is not evidence the item wasn't pushed.",
   );
 
+/** Every item in the three checkInbox buckets carries the document it belongs to (#2187). */
+const inboxItemDocumentIdField = z
+  .string()
+  .describe(
+    "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
+  );
+
 const userActionSchema = z.object({
   ...annotationBaseShape,
   author: z.literal("user"),
   type: z.literal("comment"),
   textSnippet: z.string().describe("Current document text at the annotation range (≤100 chars)"),
-  documentId: z
-    .string()
-    .describe(
-      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
-    ),
+  documentId: inboxItemDocumentIdField,
   edited: z.literal(true).optional().describe("Set when re-surfaced after a user edit"),
   alreadyPushed: alreadyPushedField,
 });
@@ -273,11 +276,7 @@ const userResponseSchema = z.object({
   author: z.literal("claude"),
   status: z.enum(["accepted", "dismissed"]),
   textSnippet: z.string(),
-  documentId: z
-    .string()
-    .describe(
-      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
-    ),
+  documentId: inboxItemDocumentIdField,
 });
 
 const inboxChatMessageSchema = z.object({
@@ -302,11 +301,7 @@ const inboxUserReplySchema = z.object({
   text: z.string(),
   timestamp: z.number(),
   textSnippet: z.string().describe("Parent comment's anchored text (≤100 chars)"),
-  documentId: z
-    .string()
-    .describe(
-      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
-    ),
+  documentId: inboxItemDocumentIdField,
   alreadyPushed: alreadyPushedField,
 });
 

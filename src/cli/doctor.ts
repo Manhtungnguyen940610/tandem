@@ -63,6 +63,9 @@ import { nodeVersionError } from "./node-version.js";
 // Injected by tsup into dist/cli. Absent in tsx dev / vitest (typeof-guarded at
 // use). This is the version the `npx` bridge entries are pinned to.
 declare const __TANDEM_VERSION__: string;
+/** This build's version, or null under tsx/vitest where nothing injects it. */
+const BUNDLED_VERSION: string | null =
+  typeof __TANDEM_VERSION__ !== "undefined" ? __TANDEM_VERSION__ : null;
 
 export type DoctorStatus = "pass" | "warn" | "fail";
 
@@ -240,10 +243,15 @@ function parseNodeVersion(version: string): ParsedNodeVersion | null {
 
 const MIN_NODE_PARSED = parseNodeVersion(MIN_NODE_VERSION) as ParsedNodeVersion;
 
+/** `a < b` on major, then minor, then patch. Nothing in it is Node-specific. */
+function isOlderTriplet(a: ParsedNodeVersion, b: ParsedNodeVersion): boolean {
+  if (a.major !== b.major) return a.major < b.major;
+  if (a.minor !== b.minor) return a.minor < b.minor;
+  return a.patch < b.patch;
+}
+
 function isBelowFloor(v: ParsedNodeVersion): boolean {
-  if (v.major !== MIN_NODE_PARSED.major) return v.major < MIN_NODE_PARSED.major;
-  if (v.minor !== MIN_NODE_PARSED.minor) return v.minor < MIN_NODE_PARSED.minor;
-  return v.patch < MIN_NODE_PARSED.patch;
+  return isOlderTriplet(v, MIN_NODE_PARSED);
 }
 
 /**
@@ -2122,13 +2130,10 @@ export function pluginVersionFromRegistry(registry: unknown, key: string): strin
 /** `a < b` on the leading numeric triplet; `false` when either is unparseable. */
 function isOlderVersion(a: string, b: string): boolean {
   // `parseNodeVersion` is a plain prefix-anchored triplet parser; the name is
-  // historical, nothing in it is Node-specific.
+  // historical.
   const pa = parseNodeVersion(a);
   const pb = parseNodeVersion(b);
-  if (pa === null || pb === null) return false;
-  if (pa.major !== pb.major) return pa.major < pb.major;
-  if (pa.minor !== pb.minor) return pa.minor < pb.minor;
-  return pa.patch < pb.patch;
+  return pa !== null && pb !== null && isOlderTriplet(pa, pb);
 }
 
 /**
@@ -2341,14 +2346,12 @@ function checkTandemPlugin(r: Recorder): void {
       installedPluginVersion = pluginVersionFromRegistry(registryRead.value, pluginKey);
     }
   }
-  const bundledVersion = typeof __TANDEM_VERSION__ !== "undefined" ? __TANDEM_VERSION__ : null;
-
   for (const outcome of evaluateTandemPlugin({
     enabledPlugins,
     wizardTandemEntry,
     wizardChannelEntry,
     installedPluginVersion,
-    bundledVersion,
+    bundledVersion: BUNDLED_VERSION,
   })) {
     recordEvaluation(r, outcome);
   }
@@ -3440,7 +3443,7 @@ export function evaluateStaleGlobal(
 }
 
 async function checkStaleGlobal(r: Recorder): Promise<void> {
-  const bundled = typeof __TANDEM_VERSION__ !== "undefined" ? __TANDEM_VERSION__ : null;
+  const bundled = BUNDLED_VERSION;
   // Without a known bundled version (tsx dev / vitest) there's nothing to
   // compare against — skip silently rather than guess.
   if (!bundled) return;

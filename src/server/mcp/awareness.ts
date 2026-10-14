@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as Y from "yjs";
 import { z } from "zod";
 import { CTRL_ROOM, Y_MAP_CHAT, Y_MAP_CHAT_STREAM } from "../../shared/constants.js";
+import { crossBasename } from "../../shared/cross-basename.js";
 import { CHAT_ACK_RULE } from "../../shared/launcher/contract.js";
 import { withInternal, withMcp } from "../../shared/origins.js";
 import type {
@@ -418,17 +419,11 @@ function noDocumentInboxNote(requestedId: string | undefined): string {
     : "No document is open.";
 }
 
-/** A file name for the summary, from either separator (`path.basename` on POSIX would not split `\`). */
-function displayName(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, "/");
-  return normalized.slice(normalized.lastIndexOf("/") + 1) || filePath;
-}
-
 type DocumentStore = NonNullable<ReturnType<typeof getDocumentStore>>;
 
 /** The `activity` object `tandem_checkInbox` returns. */
 interface InboxActivity {
-  /** The document `activity` describes: the active one on a default poll. */
+  /** The document `activity` describes: the named one, or the active one on a default poll. */
   documentId: string | null;
   isTyping: boolean;
   cursor: number | null;
@@ -438,27 +433,61 @@ interface InboxActivity {
 }
 
 interface DocumentInbox {
-  userActions: ReturnType<typeof processInboxAnnotations>["userActions"];
-  userResponses: ReturnType<typeof processInboxAnnotations>["userResponses"];
-  userReplies: ReturnType<typeof collectInboxUserReplies>;
+  userActions: InboxUserAction[];
+  userResponses: InboxUserResponse[];
+  userReplies: InboxUserReply[];
   activity: InboxActivity;
 }
 
-/** A `tandem_checkInbox` document pass that read nothing. */
-function emptyDocumentInbox(): DocumentInbox {
+/** `activity` when no document supplied one. */
+function emptyActivity(): InboxActivity {
   return {
-    userActions: [],
-    userResponses: [],
-    userReplies: [],
-    activity: {
-      documentId: null,
-      isTyping: false,
-      cursor: null,
-      lastEdit: null,
-      selectedText: null,
-      selectionAt: null,
-    },
+    documentId: null,
+    isTyping: false,
+    cursor: null,
+    lastEdit: null,
+    selectedText: null,
+    selectionAt: null,
   };
+}
+
+/**
+ * A per-document view of an inbox ledger that BUFFERS its writes (#2187).
+ * Reads see the module ledger plus this pass's own writes; nothing reaches the
+ * module ledger until `commit()`, which runs only once the document's whole
+ * pass has returned. A default poll isolates a document that throws, and a
+ * write that landed before the throw would mark items delivered that the poll
+ * then discarded — lost for the server run. Buffering makes that impossible
+ * whichever read throws, rather than relying on every throwing read staying
+ * above the first stamp. The collectors only `get`/`set`/`has`/`add`, and these
+ * remain a real `Map`/`Set`, so their pinned parameter types are unchanged.
+ */
+class StagedLedgerMap extends Map<string, number> {
+  constructor(private readonly ledger: Map<string, number>) {
+    super();
+  }
+  override get(key: string): number | undefined {
+    return super.has(key) ? super.get(key) : this.ledger.get(key);
+  }
+  override has(key: string): boolean {
+    return super.has(key) || this.ledger.has(key);
+  }
+  commit(): void {
+    for (const [key, value] of this) this.ledger.set(key, value);
+  }
+}
+
+/** {@link StagedLedgerMap} for the reply ledger. */
+class StagedLedgerSet extends Set<string> {
+  constructor(private readonly ledger: Set<string>) {
+    super();
+  }
+  override has(key: string): boolean {
+    return super.has(key) || this.ledger.has(key);
+  }
+  commit(): void {
+    for (const key of this) this.ledger.add(key);
+  }
 }
 
 /**
@@ -468,40 +497,36 @@ function emptyDocumentInbox(): DocumentInbox {
  * document is open.
  *
  * `withActivity` is false for the background documents of a default poll
- * (#2187): only the active document's activity is returned, so reading the
- * others' would be discarded work and one more thing that can throw.
+ * (#2187): only the active document's activity is returned.
+ *
+ * Ledger writes are staged; the caller applies them with `commitLedgers`
+ * after this returns, so a throw anywhere in here stamps nothing.
  */
 function collectDocumentInbox(
   store: DocumentStore,
   modeState: ModeState,
   withActivity: boolean,
-): DocumentInbox {
+): DocumentInbox & { commitLedgers: () => void } {
+  const surfaced = new StagedLedgerMap(surfacedIds);
+  const replySurfaced = new StagedLedgerSet(replySurfacedIds);
+  const commitLedgers = (): void => {
+    surfaced.commit();
+    replySurfaced.commit();
+  };
+
   const allAnnotations = store.listAnnotations();
   // Nothing to surface and no activity wanted: skip the full-text walk. A
   // default poll reaches every open document, most of them quiet.
-  if (!withActivity && allAnnotations.length === 0) return emptyDocumentInbox();
-
-  // Every read that can throw happens HERE, before the collectors below stamp
-  // a single ledger entry: the annotations above, the awareness record, the
-  // flat text and the reply threads. (The refresh inside
-  // `processInboxAnnotations` also precedes its stamps.) The handler isolates
-  // a throwing background document on a default poll (#2187), and a throw
-  // after a stamp would mark that document's items delivered while the poll
-  // discarded them — lost for the server run, with the summary saying only
-  // that the document could not be read.
-  const awareness = withActivity ? store.getUserAwareness() : null;
-  const fullText = store.getText();
-  // The same reads `collectInboxUserReplies` makes, through the same gate
-  // (`channelVisibleReplies` loads a thread only for a Claude-facing comment),
-  // taken up front and served from memory below.
-  const repliesByParent = new Map<string, AnnotationReply[]>();
-  for (const ann of allAnnotations) {
-    channelVisibleReplies(ann, (id) => {
-      const replies = store.listReplies(id);
-      repliesByParent.set(id, replies);
-      return replies;
-    });
+  if (!withActivity && allAnnotations.length === 0) {
+    return {
+      userActions: [],
+      userResponses: [],
+      userReplies: [],
+      activity: emptyActivity(),
+      commitLedgers,
+    };
   }
+  const fullText = store.getText();
 
   // Refresh only unsurfaced annotations, in the one batch
   // `YDocStore.refreshAnnotations` owns the transaction for (its docblock
@@ -526,7 +551,7 @@ function collectDocumentInbox(
   const { userActions, userResponses } = processInboxAnnotations(
     allAnnotations,
     fullText,
-    surfacedIds,
+    surfaced,
     (anns) => store.refreshAnnotations(anns),
     pollCtx,
   );
@@ -537,19 +562,26 @@ function collectDocumentInbox(
   const userReplies = collectInboxUserReplies(
     allAnnotations,
     fullText,
-    (id) => repliesByParent.get(id) ?? [],
-    replySurfacedIds,
+    (id) => store.listReplies(id),
+    replySurfaced,
     pollCtx,
   );
 
-  if (awareness === null) {
-    return { userActions, userResponses, userReplies, activity: emptyDocumentInbox().activity };
-  }
+  return {
+    userActions,
+    userResponses,
+    userReplies,
+    activity: withActivity ? readActivity(store, fullText) : emptyActivity(),
+    commitLedgers,
+  };
+}
 
+/** The `activity` object for `store`, whose flat text is `fullText`. */
+function readActivity(store: DocumentStore, fullText: string): InboxActivity {
   // Current user activity. `getUserAwareness()` is typed rather than a
   // `getMap` returning the raw Y.Map — a map accessor would be the `ydoc`
   // hatch under a new name.
-  const { selection, activity } = awareness;
+  const { selection, activity } = store.getUserAwareness();
 
   const hasSelection = selection && selection.from !== selection.to;
   const selectedText = hasSelection ? safeSlice(fullText, selection!.from, selection!.to) : null;
@@ -566,18 +598,82 @@ function collectDocumentInbox(
     hasSelection && typeof selection!.timestamp === "number" ? selection!.timestamp : null;
 
   return {
-    userActions,
-    userResponses,
-    userReplies,
-    activity: {
-      documentId: store.documentId,
-      isTyping: activity?.isTyping ?? false,
-      cursor: activity?.cursor ?? null,
-      lastEdit: activity?.lastEdit ?? null,
-      selectedText,
-      selectionAt,
-    },
+    documentId: store.documentId,
+    isTyping: activity?.isTyping ?? false,
+    cursor: activity?.cursor ?? null,
+    lastEdit: activity?.lastEdit ?? null,
+    selectedText,
+    selectionAt,
   };
+}
+
+/** Everything document-scoped one `tandem_checkInbox` call returns. */
+interface InboxDocumentsPass extends DocumentInbox {
+  /** The document `activity` describes (named, or active); null if none. */
+  activityDocumentId: string | null;
+  /** Whether any open document was read; false means only chat is shown. */
+  readAnyDocument: boolean;
+  /** Ids of documents a default poll skipped because their pass threw. */
+  unreadable: string[];
+}
+
+/**
+ * Read the documents one `tandem_checkInbox` call covers: the named one, or —
+ * with no id (#2187) — every open document, the active one first.
+ *
+ * A default poll used to read only the active document, so a comment on a
+ * background tab came back as "No new actions." — indistinguishable from a
+ * quiet poll — and the supervisor's wake for it landed on an empty inbox.
+ *
+ * On a default poll a document whose pass throws is skipped, so one document
+ * that cannot be read no longer takes every other document's items AND the
+ * chat down with it. Its staged ledger writes are dropped with it. The id is
+ * reported and the error goes to stderr alone: it can carry record text, notes
+ * included (ADR-027). A named poll rethrows to the error boundary, as before.
+ */
+function collectInboxDocuments(
+  requestedId: string | undefined,
+  modeState: ModeState,
+): InboxDocumentsPass {
+  // `getCurrentDoc` resolves only an OPEN document, so this is open or null.
+  const activityDocumentId = requestedId ?? getCurrentDoc()?.id ?? null;
+  const order =
+    requestedId !== undefined
+      ? [requestedId]
+      : [
+          ...(activityDocumentId !== null ? [activityDocumentId] : []),
+          ...[...getOpenDocs().keys()].filter((id) => id !== activityDocumentId),
+        ];
+
+  const pass: InboxDocumentsPass = {
+    userActions: [],
+    userResponses: [],
+    userReplies: [],
+    activity: emptyActivity(),
+    activityDocumentId,
+    readAnyDocument: false,
+    unreadable: [],
+  };
+  for (const id of order) {
+    const store = getDocumentStore(id);
+    if (!store) continue;
+    pass.readAnyDocument = true;
+    let inbox: ReturnType<typeof collectDocumentInbox>;
+    try {
+      inbox = collectDocumentInbox(store, modeState, id === activityDocumentId);
+    } catch (err) {
+      if (requestedId !== undefined) throw err;
+      console.error(`[Tandem] tandem_checkInbox could not read document ${id}:`, err);
+      pass.unreadable.push(id);
+      continue;
+    }
+    inbox.commitLedgers();
+    pass.userActions.push(...inbox.userActions);
+    pass.userResponses.push(...inbox.userResponses);
+    pass.userReplies.push(...inbox.userReplies);
+    if (id === activityDocumentId) pass.activity = inbox.activity;
+  }
+  return pass;
 }
 
 export function registerAwarenessTools(server: McpServer): void {
@@ -686,59 +782,15 @@ export function registerAwarenessTools(server: McpServer): void {
         // `activity` — comes from `collectDocumentInbox`, whose per-record
         // filters (notes, private records, the Solo hold) are the same for
         // every document it reads.
-        const userActions: InboxUserAction[] = [];
-        const userResponses: InboxUserResponse[] = [];
-        const userReplies: InboxUserReply[] = [];
-        let activity = emptyDocumentInbox().activity;
-        const addBuckets = (inbox: DocumentInbox): void => {
-          userActions.push(...inbox.userActions);
-          userResponses.push(...inbox.userResponses);
-          userReplies.push(...inbox.userReplies);
-        };
-        let readAnyDocument = false;
-        let activeId: string | null = null;
-        const unreadable: string[] = [];
-
-        if (requestedId !== undefined) {
-          // A named document: one store, and a throw reaches the error
-          // boundary with nothing read, as before #2187.
-          const store = getDocumentStore(requestedId);
-          if (store) {
-            const inbox = collectDocumentInbox(store, modeState, true);
-            addBuckets(inbox);
-            activity = inbox.activity;
-            readAnyDocument = true;
-          }
-        } else {
-          // #2187: a default poll reads EVERY open document. It used to read
-          // only the active one, so a comment on a background tab came back as
-          // "No new actions." — indistinguishable from a quiet poll — and the
-          // supervisor's wake for it landed on an empty inbox. The active
-          // document goes first and is read once; it alone supplies `activity`.
-          activeId = getCurrentDoc()?.id ?? null;
-          const openIds = [...getOpenDocs().keys()];
-          const order =
-            activeId !== null && openIds.includes(activeId)
-              ? [activeId, ...openIds.filter((id) => id !== activeId)]
-              : openIds;
-          for (const id of order) {
-            const store = getDocumentStore(id);
-            if (!store) continue;
-            readAnyDocument = true;
-            // Isolated, so one document that cannot be read no longer takes
-            // every other document's items AND the chat down with it. The
-            // summary names the document id only: the error can carry record
-            // text, notes included (ADR-027), so it goes to stderr alone.
-            try {
-              const inbox = collectDocumentInbox(store, modeState, id === activeId);
-              addBuckets(inbox);
-              if (id === activeId) activity = inbox.activity;
-            } catch (err) {
-              console.error(`[Tandem] tandem_checkInbox could not read document ${id}:`, err);
-              unreadable.push(id);
-            }
-          }
-        }
+        const {
+          userActions,
+          userResponses,
+          userReplies,
+          activity,
+          activityDocumentId,
+          readAnyDocument,
+          unreadable,
+        } = collectInboxDocuments(requestedId, modeState);
 
         // The join closes HERE, directly above the chat loop — a separate fact
         // from the stamp above, kept apart because it is a claim about the
@@ -818,16 +870,16 @@ export function registerAwarenessTools(server: McpServer): void {
         const elsewhere = new Set(
           [...userActions, ...userResponses, ...userReplies]
             .map((item) => item.documentId)
-            .filter((id) => id !== activeId),
+            .filter((id) => id !== activityDocumentId),
         );
-        if (requestedId === undefined && elsewhere.size > 0) {
+        if (elsewhere.size > 0) {
           const openDocs = getOpenDocs();
           const names = [...elsewhere].map((id) => {
             const doc = openDocs.get(id);
-            return doc ? displayName(doc.filePath) : id;
+            return (doc && crossBasename(doc.filePath)) || id;
           });
           actions +=
-            ` Some items are from ${activeId === null ? "open documents (none is active)" : "documents other than the active one"}: ${names.join(", ")}.` +
+            ` Some items are from ${activityDocumentId === null ? "open documents (none is active)" : "documents other than the active one"}: ${names.join(", ")}.` +
             " Pass each item's documentId when acting on it.";
         }
         if (unreadable.length > 0) {
