@@ -2676,6 +2676,20 @@ describe("#2197 — startAfterSetup: a wizard Apply starts Tandem's Claude when 
     expect(children).toHaveLength(0);
   });
 
+  it("another AI attached AND the licence refusing: no refusal recorded, so activating starts nothing beside it", async () => {
+    let refused = true;
+    const { sup } = await firstRunSupervisor({
+      aiRefusal: () => (refused ? LICENCE_REFUSAL : null),
+      otherAiAttached: () => true,
+    });
+    expect(await sup.startAfterSetup()).toBe("other-ai");
+    expect(sup.licenceRefusal()).toBeNull();
+    refused = false;
+    await sup.resumeAfterLicence();
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
   it("a sign-in stop (a tripped breaker) is a diagnosis: held, nothing spawned", async () => {
     const { sup } = makeSupervisor();
     await sup.startFresh(cwdDir);
@@ -2937,6 +2951,15 @@ describe("#2197 — the one-time greeting", () => {
     expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
     // A new greeting turn is pending again, not late.
     expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("an error subtype with no is_error flag also leaves it owed", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "error_during_execution" });
+    await settle();
+    expect(g.markDone).not.toHaveBeenCalled();
   });
 
   it("a crash before the greeting turn ends: the crash restart does not greet again", async () => {

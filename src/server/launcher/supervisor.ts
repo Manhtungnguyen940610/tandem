@@ -2232,10 +2232,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // match), because a miss would re-send it on every later spawn. Only
         // an errored turn — Claude never got to speak, the sign-in refusal
         // among them — leaves it owed, so the start after the fix greets.
+        // "Errored" is either signal: `is_error` (the least-verified field —
+        // #1267 saw none during the spike) or an `error_*` subtype.
         if (awaitingGreetingResult) {
           awaitingGreetingResult = false;
           if (greeting?.phase === "pending") greeting.phase = "unanswered";
-          if (parsed.is_error !== true) spendGreeting();
+          const errored =
+            parsed.is_error === true ||
+            (parsed.subtype !== undefined && parsed.subtype !== "success");
+          if (!errored) spendGreeting();
         }
 
         // A Claude Code that is not signed in answers every turn with this
@@ -3135,14 +3140,16 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // not be confirmed (its child may still be alive) is a diagnosis for the
       // user to act on: an Apply does not clear it the way their Start does.
       if (breakerTripped || lastError === "stop-failed") return decide("held");
+      // Bryan's #2196 rule, applied here as well: never a second AI beside
+      // the user's own. Before the licence check, which RECORDS its refusal:
+      // a recorded refusal is what activating the licence resumes, and that
+      // resume would then start Tandem's Claude beside the user's own AI.
+      if (anotherAiOn()) return decide("other-ai");
       const refusal = decideRefusal();
       if (refusal !== null) {
         recordLicenceRefusal(refusal);
         return decide("refused");
       }
-      // Bryan's #2196 rule, applied here as well: never a second AI beside
-      // the user's own.
-      if (anotherAiOn()) return decide("other-ai");
       decide("starting");
       console.error("[Launcher] Setup wrote a Claude Code entry — starting Tandem's Claude");
       // `respawn` reads the plan and settings again under this same lock: a

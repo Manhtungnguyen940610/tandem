@@ -227,10 +227,14 @@ function reachabilityStatusFor(id: string): ReachabilityStatus | null {
 // Claude included (#2197). While the Apply started it (or it was running), a
 // session proves nothing about the user's own Claude, so the screen does not
 // claim "connected" and keeps the restart-and-/mcp guidance.
+// Not when the session /health counts may be Tandem's own Claude: an Apply
+// that started it, or one whose answer timed out (`unknown`) with it running
+// now.
 const userClaudeConnected = $derived(
   reachability.claudeConnected &&
     wizard.tandemClaude !== "starting" &&
-    wizard.tandemClaude !== "running",
+    wizard.tandemClaude !== "running" &&
+    tandemClaudeLive?.running !== true,
 );
 
 // Adapt the "what's next" guidance to the reachability outcome.
