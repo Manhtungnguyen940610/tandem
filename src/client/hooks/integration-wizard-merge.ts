@@ -166,6 +166,10 @@ export interface BuildSaveOutput {
   /** Saved refs a newly entered token replaced: delete them once the new
    * file is persisted, and never before. */
   superseded: string[];
+  /** A card built from a saved record whose record is gone from the fresh
+   * read (removed, or rewritten under a new id, while the wizard was open):
+   * saving would re-add it from a stale copy, so the caller must not. */
+  stale: boolean;
 }
 
 export function buildSaveFile(input: BuildSaveInput): BuildSaveOutput {
@@ -179,7 +183,9 @@ export function buildSaveFile(input: BuildSaveInput): BuildSaveOutput {
       const original = originalRefs.get(record.id);
       const newRef = card.config.tokenSecretRef;
       const replaced = newRef !== undefined && newRef !== original;
-      if (replaced && original !== undefined) superseded.push(original);
+      // The ref the new token replaces is the one on disk NOW.
+      const onDisk = record.tokenSecretRef;
+      if (replaced && onDisk !== undefined && onDisk !== newRef) superseded.push(onDisk);
       const cardPath = recordConfigPath(card.config);
       const merged = {
         ...record,
@@ -193,6 +199,7 @@ export function buildSaveFile(input: BuildSaveInput): BuildSaveOutput {
     }
     return record;
   });
+  const stale = [...pickedById.values()].some((card) => card.fromRecord === true);
   for (const card of pickedById.values()) {
     integrations.push({
       ...card.config,
@@ -210,5 +217,6 @@ export function buildSaveFile(input: BuildSaveInput): BuildSaveOutput {
     },
     applyIds: picked.map((p) => p.id),
     superseded,
+    stale,
   };
 }

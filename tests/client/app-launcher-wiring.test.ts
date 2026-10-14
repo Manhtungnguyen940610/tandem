@@ -165,4 +165,15 @@ describe("App v1.0 walkthrough wiring (#2198)", () => {
       dismiss.indexOf("localStorage.setItem"),
     );
   });
+
+  it("another tab's close latches this tab's open wizard rather than unmounting it", () => {
+    const start = APP.indexOf("const onStorage = (ev: StorageEvent) => {");
+    const body = APP.slice(start, APP.indexOf("};", start));
+    expect(body).toMatch(
+      /\(ev\.key === WIZARD_DISMISSED_KEY \|\| ev\.key === WIZARD_CLOSED_LAUNCH_KEY\) &&\s*isAutoOpenFirstRun\s*\) \{\s*manuallyReopened = true;/,
+    );
+    expect(body.indexOf("manuallyReopened = true")).toBeLessThan(
+      body.indexOf("wizardClosedForLaunch = ev.newValue"),
+    );
+  });
 });

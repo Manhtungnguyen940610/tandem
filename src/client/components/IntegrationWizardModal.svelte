@@ -455,6 +455,9 @@ function close(): void {
  *  $effect is keyed on `getActive()`, which doesn't change post-install, so
  *  it won't auto-re-probe. */
 function retryDetection(): void {
+  // A token entered this session and never saved must not outlive the reset
+  // (a saved one is never touched — see the hook).
+  void wizard.cleanupUnsavedSecrets().catch(() => {});
   wizard.reset();
   secretInputs = {};
   // Same as `openCoworkView` (#1432): `wizard.reset()` sets `step = "connect"`,
@@ -552,7 +555,13 @@ const hasClaudeCodeInstall = $derived(wizard.existing.some((i) => i.target.kind 
  * connecting" (Bryan, 2026-10-14) — and then Connect stays the primary action
  * whenever something connectable was found. */
 const keepLabel = $derived(
-  wizard.hasSetupToKeep ? "Keep this setup" : "Continue without connecting",
+  wizard.step !== "connect"
+    ? // After an Apply or a failed read, what was read at open no longer says
+      // what is set up: a neutral label for "end the walkthrough as things are".
+      "Keep things as they are"
+    : wizard.hasSetupToKeep
+      ? "Keep this setup"
+      : "Continue without connecting",
 );
 const keepIsPrimary = $derived(wizard.hasSetupToKeep || !wizard.existing.some(isSelectable));
 /** A start-mode save in flight: Connect and Keep both ask the launcher to
@@ -1100,11 +1109,6 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 />
               </div>
             {/if}
-            {#if wizard.keepError}
-              <p role="alert" class="iw-keep-error" data-testid="integration-wizard-keep-error">
-                {wizard.keepError}
-              </p>
-            {/if}
             <p
               class="iw-hint-text iw-reopen-hint"
               data-testid="integration-wizard-reopen-hint"
@@ -1409,6 +1413,14 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
           {/if}
         {/if}
       </div>
+
+      <!-- Above the footer, on every step: Keep is offered on the done and
+           error screens too, and a refusal there must not be silent. -->
+      {#if walkthrough && view === "main" && wizard.keepError}
+        <p role="alert" class="iw-keep-error" data-testid="integration-wizard-keep-error">
+          {wizard.keepError}
+        </p>
+      {/if}
 
       <footer class="iw-footer">
         {#if view === "cowork"}
@@ -1781,7 +1793,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
   }
 
   .iw-keep-error {
-    margin: var(--tandem-space-2) 0 0;
+    margin: 0;
     color: var(--tandem-error-fg);
     font-size: var(--tandem-text-sm);
   }

@@ -160,13 +160,6 @@ async function writeIntegrationsFile(filePath: string, file: IntegrationsFile): 
 }
 
 /**
- * Atomic write for a small config file under the app-data dir: temp file
- * (`wx`, 0o600) → rename, with an EXDEV fallback and a POSIX chmod backstop.
- * Exported so sibling stores (Models registry) reuse this ONE copy of the
- * temp-rename + symlink-refusal logic instead of duplicating it. Callers
- * validate/serialize their own payload before calling.
- */
-/**
  * Read a small JSON file of Tandem's own, synchronously, for the one-shot
  * markers (#2197's greeting, #2198's walkthrough): `null` when there is no
  * file, `"unreadable"` for anything else that is not a regular file within
@@ -194,6 +187,13 @@ export function readBoundedJsonFileSync(
   }
 }
 
+/**
+ * Atomic write for a small config file under the app-data dir: temp file
+ * (`wx`, 0o600) → rename, with an EXDEV fallback and a POSIX chmod backstop.
+ * Exported so sibling stores (Models registry) reuse this ONE copy of the
+ * temp-rename + symlink-refusal logic instead of duplicating it. Callers
+ * validate/serialize their own payload before calling.
+ */
 export async function atomicWriteConfigFile(filePath: string, content: string): Promise<void> {
   const dir = path.dirname(filePath);
   const name = path.basename(filePath);

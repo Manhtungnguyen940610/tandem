@@ -1299,4 +1299,84 @@ describe("createIntegrationWizard — the saved setup (#2198)", () => {
     flushSync();
     expect(wizard.keepError).toMatch(/updated since this window opened/);
   });
+
+  it("a record removed while the wizard was open stops the save instead of re-adding it", async () => {
+    const s = server();
+    let gets = 0;
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/integrations") && (init?.method ?? "GET") === "GET") {
+        gets += 1;
+        if (gets > 1) {
+          return new Response(
+            JSON.stringify({ schemaVersion: INTEGRATIONS_SCHEMA_VERSION, integrations: [] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+      }
+      return s.fetchFn(input, init);
+    }) as unknown as typeof fetch;
+    const wizard = createIntegrationWizard({ fetchFn, keychainBackend: s.keychainBackend });
+    await wizard.begin();
+    await wizard.save();
+    flushSync();
+    expect(wizard.step).toBe("error");
+    expect(wizard.errorMessage).toMatch(/changed while this window was open/);
+    expect(s.calls.some((c) => c.method === "POST" && c.url.endsWith("/api/integrations"))).toBe(
+      false,
+    );
+    expect(s.deletedRefs).toEqual([]);
+  });
+
+  it("Keep that finds the walkthrough already done (another tab) counts as done", async () => {
+    const wizard = createIntegrationWizard({
+      fetchFn: makeFetchStub([
+        {
+          method: "POST",
+          urlMatch: /\/walkthrough-confirm$/,
+          handler: () => ({
+            status: 409,
+            body: { code: "WALKTHROUGH_NOT_PENDING", message: "There is no setup walkthrough." },
+          }),
+        },
+      ]),
+    });
+    expect(await wizard.keepSetup("1.0.0")).toBe(true);
+    flushSync();
+    expect(wizard.keepError).toBeNull();
+  });
+
+  it("two installs whose paths differ only by case do not share one record's card (or id)", async () => {
+    const twin = (configPath: string) => ({
+      target: { kind: "claude-code", label: "Claude Code", configPath },
+      status: "ok",
+      tandemEntry: { type: "http", url: "http://127.0.0.1:3479/mcp" },
+      tandemValidation: { status: "valid" },
+    });
+    const wizard = createIntegrationWizard({
+      fetchFn: makeFetchStub([
+        {
+          method: "GET",
+          urlMatch: /\/api\/integrations\/existing$/,
+          handler: () => ({
+            status: 200,
+            body: { installs: [twin("/home/u/.claude.json"), twin("/home/U/.claude.json")] },
+          }),
+        },
+        {
+          method: "GET",
+          urlMatch: /\/api\/integrations$/,
+          handler: () => ({
+            status: 200,
+            body: { schemaVersion: INTEGRATIONS_SCHEMA_VERSION, integrations: [savedRecord] },
+          }),
+        },
+      ]),
+    });
+    await wizard.begin();
+    flushSync();
+    const ids = wizard.picked.map((p) => p.id);
+    expect(ids).toHaveLength(2);
+    expect(new Set(ids).size).toBe(2);
+    expect(ids).toContain("cc-saved");
+  });
 });

@@ -3134,11 +3134,14 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     });
     withLock(async () => {
       // This is the walkthrough's confirm, if one was owed: the hold is
-      // released (or kept, below) exactly once.
+      // released (or kept, below) exactly once — but only once there is a
+      // Claude Code setup to start. Without one (a Desktop-only "Continue
+      // without connecting", a throw before the decision) the hold stays, so
+      // an Apply that adds Claude Code later this launch still starts it.
       const heldForWalkthrough = walkthroughHold;
-      walkthroughHold = false;
       const plan = await buildPlan();
       if (!plan) return decide("not-configured");
+      walkthroughHold = false;
       if (shuttingDown) return decide("held");
       if (isAlive() || restartPending()) return decide("running");
       const settings = await readSettingsNow();

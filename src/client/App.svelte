@@ -811,9 +811,9 @@ $effect(() => {
 const WIZARD_DISMISSED_KEY = "tandem:wizard-dismissed";
 /** The auto-opened wizard was closed during this server launch (#2198): not
  * again until the next one. Keyed on the server's `launchId`, so "next launch"
- * means a server start in the browser distribution too (a tab that stays open
- * across a restart gets it back), and in localStorage, so every tab agrees.
- * Memory alone holds it when storage is unavailable. */
+ * means a server start in the browser distribution too (a tab reloaded after a
+ * restart gets it back), and in localStorage, so every tab agrees. Memory
+ * alone holds it when storage is unavailable. */
 const WIZARD_CLOSED_LAUNCH_KEY = "tandem:wizard-closed-for-launch";
 let dismissedForVersion = $state<string | null>(readDismissed());
 let wizardClosedForLaunch = $state<string | null>(readClosedForLaunch());
@@ -930,6 +930,15 @@ function onWalkthroughKept(): void {
 // tab updates `dismissedForVersion` synchronously above.
 $effect(() => {
   const onStorage = (ev: StorageEvent) => {
+    // Another tab's close stops FUTURE auto-opens here; it must not unmount a
+    // wizard this tab is showing mid-flow (its own close cleans up after
+    // itself — an unmount from here would skip that). Latch it open first.
+    if (
+      (ev.key === WIZARD_DISMISSED_KEY || ev.key === WIZARD_CLOSED_LAUNCH_KEY) &&
+      isAutoOpenFirstRun
+    ) {
+      manuallyReopened = true;
+    }
     if (ev.key === WIZARD_DISMISSED_KEY) {
       dismissedForVersion = ev.newValue;
     }

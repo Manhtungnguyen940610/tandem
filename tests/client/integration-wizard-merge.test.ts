@@ -280,4 +280,30 @@ describe("buildSaveFile", () => {
     });
     expect(out.file.integrations[0]).toMatchObject({ apply: "skip" });
   });
+  it("a card whose record is gone from the fresh read is stale: not re-added from the old copy", () => {
+    const install = ccInstall();
+    const out = buildSaveFile({
+      saved: file([]),
+      picked: [cardFrom(install, ccRecord())],
+      existing: [install],
+      deselected: new Set(),
+      originalRefs: new Map([["cc-saved", "cc-saved-ref"]]),
+    });
+    expect(out.stale).toBe(true);
+  });
+
+  it("the ref a new token replaces is the one on disk now, not the one read at open", () => {
+    const install = ccInstall();
+    const card = cardFrom(install, ccRecord());
+    card.config = { ...card.config, tokenSecretRef: "cc-new" } as IntegrationConfig;
+    const out = buildSaveFile({
+      saved: file([ccRecord({ tokenSecretRef: "cc-rotated-elsewhere" })]),
+      picked: [card],
+      existing: [install],
+      deselected: new Set(),
+      originalRefs: new Map([["cc-saved", "cc-saved-ref"]]),
+    });
+    expect(out.superseded).toEqual(["cc-rotated-elsewhere"]);
+    expect(out.stale).toBe(false);
+  });
 });

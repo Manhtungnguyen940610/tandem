@@ -35,6 +35,7 @@ import {
   API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
   type ApplyItemResult,
   type ApplyResponse,
+  ERROR_CODE_WALKTHROUGH_NOT_PENDING,
   type ExistingMcpInstall,
   type IntegrationConfig,
   type IntegrationsFile,
@@ -62,6 +63,8 @@ import {
 export type WizardStep = "connect" | "applying" | "done" | "error";
 
 const UNREADABLE_SAVED_SETUP = "Could not read your saved Tandem setup. Try again.";
+const SAVED_SETUP_CHANGED =
+  "Your saved Tandem setup changed while this window was open. Try again to see it as it is now.";
 
 export interface PickedIntegration {
   /** Stable client-side id, mirrored into `IntegrationConfig.id` on save. */
@@ -339,8 +342,13 @@ export function createIntegrationWizard(
       // everything connectable; otherwise what is set up (#2198), each card
       // built from its saved record.
       const selective = isSomethingSetUp(body.installs, records);
+      // One card per record: two installs whose paths differ only by case
+      // would otherwise both claim it (and share an id).
+      const claimed = new Set<string>();
       picked = body.installs.filter(isSelectable).flatMap((install) => {
-        const record = matchRecord(install, records, body.installs);
+        let record = matchRecord(install, records, body.installs);
+        if (record && claimed.has(record.id)) record = undefined;
+        if (record) claimed.add(record.id);
         if (!preselects(install, record, selective)) return [];
         const card = cardFor(install, record);
         return card ? [card] : [];
@@ -390,8 +398,12 @@ export function createIntegrationWizard(
     };
   };
 
-  const pickedForInstall = (install: ExistingMcpInstall): PickedIntegration | null =>
-    cardFor(install, matchRecord(install, savedRecords, existing));
+  const pickedForInstall = (install: ExistingMcpInstall): PickedIntegration | null => {
+    const record = matchRecord(install, savedRecords, existing);
+    // A record another card already holds is not this install's.
+    const taken = record !== undefined && picked.some((p) => p.id === record.id);
+    return cardFor(install, taken ? undefined : record);
+  };
 
   const submitSecret = async (target: PickedIntegration, secret: string) => {
     const ref = makeSecretRef(target.id);
@@ -486,13 +498,20 @@ export function createIntegrationWizard(
     // Apply intent per card (a hand-edited entry that failed validation is
     // "skip"), the saved records the wizard does not own kept as they are,
     // and the file in its original order — see integration-wizard-merge.ts.
-    const { file, applyIds, superseded } = buildSaveFile({
+    const { file, applyIds, superseded, stale } = buildSaveFile({
       saved,
       picked,
       existing,
       deselected,
       originalRefs,
     });
+    if (stale) {
+      // A saved record changed under the wizard: re-adding it from the copy
+      // read at open would undo that change (or duplicate a re-keyed record).
+      await cleanupStoredSecrets();
+      setError(SAVED_SETUP_CHANGED);
+      return;
+    }
     // Once persist returns 200 the integrations file on disk durably
     // references the stored keychain refs, so the catch below must NOT delete
     // them — doing so would dangle the persisted config (and, if apply also
@@ -565,6 +584,15 @@ export function createIntegrationWizard(
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ serverVersion }),
       });
+      // Kept already (another tab, a double click): the walkthrough is done,
+      // which is what Keep wanted.
+      if (res.status === 409) {
+        const body = (await res
+          .clone()
+          .json()
+          .catch(() => null)) as { code?: string } | null;
+        if (body?.code === ERROR_CODE_WALKTHROUGH_NOT_PENDING) return true;
+      }
       if (!res.ok) {
         keepError = await responseErrorMessage(
           res,

@@ -2764,6 +2764,19 @@ describe("#2198 — the v1.0 walkthrough holds the boot start", () => {
     expect(children).toHaveLength(0);
   });
 
+  it("a confirm with no Claude Code setup keeps the hold: adding Claude Code later this launch starts it", async () => {
+    // A Desktop-only user clicks Continue without connecting, then connects
+    // Claude Code from Settings in the same launch.
+    writeLauncherSettingsFile(settings("auto"));
+    writeIntegrations([]);
+    const { sup } = makeSupervisor({ walkthroughPending: () => true });
+    await sup.start();
+    expect(await sup.startAfterSetup()).toBe("not-configured");
+    writeIntegrations(null);
+    expect(await sup.startAfterSetup()).toBe("starting");
+    await nthChild(1);
+  });
+
   it("a chat during the walkthrough still starts Claude: the user asked (#2196)", async () => {
     writeLauncherSettingsFile(settings("auto"));
     const { sup, emit } = makeSupervisor({ walkthroughPending: () => true });

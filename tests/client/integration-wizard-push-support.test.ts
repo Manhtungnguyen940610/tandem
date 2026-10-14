@@ -972,9 +972,15 @@ describe("IntegrationWizardModal — the v1.0 walkthrough (#2198)", () => {
     wizardStub.applyResults = [
       { id: "claude-code-1", status: "error", code: "WRITE_FAILED", message: "x" } as never,
     ];
+    wizardStub.keepError = "Could not save that you kept your setup.";
     const { container } = mountWalkthrough();
     await tick();
-    expect(q(container, "integration-wizard-keep-setup")).not.toBeNull();
+    // A neutral label — what was read at open no longer says what is set up —
+    // and a refusal is shown here too, not only on the connect step.
+    expect(q(container, "integration-wizard-keep-setup")?.textContent?.trim()).toBe(
+      "Keep things as they are",
+    );
+    expect(q(container, "integration-wizard-keep-error")?.textContent).toMatch(/Could not save/);
   });
 
   it("control: no walkthrough, no Keep, the ordinary copy", async () => {

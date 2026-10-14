@@ -38,6 +38,8 @@ export const WALKTHROUGH_FILE_NAME = "v1-walkthrough.json";
 export const TANDEM_FORCE_V1_WALKTHROUGH_ENV = "TANDEM_FORCE_V1_WALKTHROUGH";
 const WALKTHROUGH_VERSION = 1;
 const MAX_WALKTHROUGH_BYTES = 1024;
+/** Read on every first-run GET: say an unreadable record is ignored once. */
+let loggedUnreadable = false;
 
 export type WalkthroughVia = "keep" | "apply";
 
@@ -87,7 +89,10 @@ export function isWalkthroughPending(
   if (!isV1Release(appVersion) && env[TANDEM_FORCE_V1_WALKTHROUGH_ENV] !== "1") return false;
   const record = readRecord(base);
   if (record === "unreadable") {
-    console.error("[Tandem] Could not read the v1.0 walkthrough record — not showing it");
+    if (!loggedUnreadable) {
+      loggedUnreadable = true;
+      console.error("[Tandem] Could not read the v1.0 walkthrough record — not showing it");
+    }
     return false;
   }
   if (record === null) return true;
