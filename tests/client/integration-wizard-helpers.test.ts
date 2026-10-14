@@ -3,6 +3,7 @@ import {
   computeDoneHeaderState,
   pushSupportNote,
   tandemClaudeDoneCopy,
+  tandemClaudeIsStartingOrRunning,
   tandemClaudeNeedsSignIn,
 } from "../../src/client/components/integration-wizard-helpers.js";
 import { targetPushSupport } from "../../src/shared/integrations/contract.js";
@@ -89,6 +90,41 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
   it("says nothing without an answer to report", () => {
     expect(tandemClaudeDoneCopy(null, null)).toBeNull();
     expect(tandemClaudeDoneCopy("unknown", stopped)).toBeNull();
+  });
+
+  it("tandemClaudeIsStartingOrRunning holds exactly when the line is the starting or running one", () => {
+    const answers = [
+      null,
+      "unknown",
+      "starting",
+      "running",
+      "held",
+      "other-ai",
+      "refused",
+      "not-configured",
+    ] as const;
+    const lives = [
+      null,
+      stopped,
+      { ...stopped, running: true },
+      { ...stopped, remedy: "start" },
+      { ...stopped, remedy: "restart" },
+      { ...stopped, remedy: "sign-in" },
+      { ...stopped, remedy: "ai-off" },
+      { ...stopped, standby: "off", remedy: "start" },
+      { ...stopped, standby: "idle", remedy: "start" },
+    ] as const;
+    for (const a of answers) {
+      for (const l of lives) {
+        const line = tandemClaudeDoneCopy(a, l) ?? "";
+        const startingOrRunning =
+          line.startsWith("Tandem is starting its own Claude") ||
+          line.startsWith("Tandem's own Claude is running");
+        expect(tandemClaudeIsStartingOrRunning(a, l), `${a} ${JSON.stringify(l)}`).toBe(
+          startingOrRunning,
+        );
+      }
+    }
   });
 
   it("an answer that timed out is overruled by a Claude that is running now", () => {

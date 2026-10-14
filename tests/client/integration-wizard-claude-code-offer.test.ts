@@ -338,6 +338,26 @@ describe("IntegrationWizardModal — the Claude Code offer for a Claude Desktop 
       expect(q(container, "integration-wizard-check-sign-in")).not.toBeNull();
     });
 
+    it.each([
+      ["a crash loop", { running: false, remedy: "restart", standby: null }],
+      ["the licence refusing", { running: false, remedy: "ai-off", standby: null }],
+      ["a standby", { running: false, remedy: "start", standby: "off" }],
+    ] as const)(
+      "a start overtaken by %s does not say 'talk to Tandem's own Claude'",
+      async (_l, live) => {
+        const { container } = await installThenApply("starting", { tandemClaudeLive: live });
+        expect(whatsNext(container)).not.toContain("talk to Tandem's own Claude");
+        expect(q(container, "integration-wizard-tandem-claude")).not.toBeNull();
+      },
+    );
+
+    it("points at the line below with a space between the two sentences", async () => {
+      const { container } = await installThenApply("held");
+      expect(q(container, "integration-wizard-tandem-claude")).not.toBeNull();
+      // Collapsing whitespace cannot add a space that is not there.
+      expect(whatsNext(container)).toContain("as before. The line below");
+    });
+
     it("control: a start that is under way does say it", async () => {
       const { container } = await installThenApply("starting");
       expect(whatsNext(container)).toContain("talk to Tandem's own Claude");

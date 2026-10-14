@@ -67,6 +67,7 @@ import {
   pushSupportNote,
   type TandemClaudeLive,
   tandemClaudeDoneCopy,
+  tandemClaudeIsStartingOrRunning,
   tandemClaudeNeedsSignIn,
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
@@ -293,11 +294,10 @@ const whatsNext = $derived.by(
     if (userClaudeConnected) return "connected";
     // Installed here for Tandem's own Claude, which the Apply is starting
     // (#2199): "restart Claude Code and run /mcp" is advice for a terminal
-    // session this user never had. Any other answer — or a start still
-    // waiting on sign-in, whose own line follows — gets the neutral arm.
+    // session this user never had. Any other answer — a start held, failed
+    // or waiting on sign-in, whose own line follows — gets the neutral arm.
     if (installedHereAndApplied) {
-      const started = wizard.tandemClaude === "starting" || wizard.tandemClaude === "running";
-      return started && !tandemClaudeNeedsSignIn(wizard.tandemClaude, tandemClaudeLive)
+      return tandemClaudeIsStartingOrRunning(wizard.tandemClaude, tandemClaudeLive)
         ? "tandem-claude"
         : "installed-here";
     }
@@ -1445,8 +1445,8 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 {:else if whatsNext === "installed-here"}
                   <!-- Points below only when there is a line there: an Apply
                        whose answer timed out has none. -->
-                  Claude Desktop works with Tandem as before.{#if tandemClaudeLine}
-                    The line below says what happened to Tandem's own Claude.{/if}
+                  Claude Desktop works with Tandem as before.{#if tandemClaudeLine}{" "}The line
+                    below says what happened to Tandem's own Claude.{/if}
                 {:else}
                   Restart Claude Code, then type <code class="iw-code-inline">/mcp</code> to verify —
                   or just ask Claude to open a document.
