@@ -4,8 +4,8 @@
  * and replies observers:
  *
  *   1. Subscribe to a Y.Map.
- *   2. Skip transactions whose origin is in the channel-skip set
- *      (mcp / file-sync / internal / reload — only `browser` emits).
+ *   2. Skip transactions whose origin `shouldSkipChannel` rejects (only
+ *      `browser` emits).
  *   3. For each changed key, optionally derive zero or more TandemEvents
  *      and forward them through `pushEvent`.
  *
