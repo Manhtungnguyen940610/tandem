@@ -958,7 +958,14 @@ describe("createAiReadiness", () => {
  * to stop, so the wrong branch is actively harmful, not merely mislabelled.
  */
 describe("AI_CTA", () => {
-  const CHIPS: Exclude<AiChip, null>[] = ["connect", "setup", "sign-in", "restart", "ai-off"];
+  const CHIPS: Exclude<AiChip, null>[] = [
+    "connect",
+    "setup",
+    "sign-in",
+    "restart",
+    "start",
+    "ai-off",
+  ];
 
   it("covers every non-null chip with non-empty copy", () => {
     // Guards against a future union member landing with no entry: the type
@@ -1010,11 +1017,17 @@ describe("AI_CTA", () => {
  */
 describe("ctaHandler", () => {
   it("calls exactly the matching handler for each action", () => {
-    for (const action of ["connect", "restart", "open-license-settings"] as const) {
-      const h = { connect: vi.fn(), restart: vi.fn(), openLicenseSettings: vi.fn() };
+    for (const action of ["connect", "restart", "start", "open-license-settings"] as const) {
+      const h = {
+        connect: vi.fn(),
+        restart: vi.fn(),
+        start: vi.fn(),
+        openLicenseSettings: vi.fn(),
+      };
       ctaHandler(action, h)();
       expect(h.connect).toHaveBeenCalledTimes(action === "connect" ? 1 : 0);
       expect(h.restart).toHaveBeenCalledTimes(action === "restart" ? 1 : 0);
+      expect(h.start).toHaveBeenCalledTimes(action === "start" ? 1 : 0);
       expect(h.openLicenseSettings).toHaveBeenCalledTimes(
         action === "open-license-settings" ? 1 : 0,
       );
@@ -1022,16 +1035,26 @@ describe("ctaHandler", () => {
   });
 
   it("is typed over AiCtaAction only", () => {
-    const h = { connect: () => {}, restart: () => {}, openLicenseSettings: () => {} };
+    const h = {
+      connect: () => {},
+      restart: () => {},
+      start: () => {},
+      openLicenseSettings: () => {},
+    };
     expectTypeOf(ctaHandler)
       .parameter(0)
-      .toEqualTypeOf<"connect" | "restart" | "open-license-settings">();
+      .toEqualTypeOf<"connect" | "restart" | "start" | "open-license-settings">();
     // @ts-expect-error — an unknown action is a compile error.
     ctaHandler("relaunch", h);
   });
 
   it("every AI_CTA entry resolves to a handler", () => {
-    const h = { connect: vi.fn(), restart: vi.fn(), openLicenseSettings: vi.fn() };
+    const h = {
+      connect: vi.fn(),
+      restart: vi.fn(),
+      start: vi.fn(),
+      openLicenseSettings: vi.fn(),
+    };
     for (const chip of Object.keys(AI_CTA) as Exclude<AiChip, null>[]) {
       expect(typeof ctaHandler(AI_CTA[chip].action, h)).toBe("function");
     }
@@ -1746,6 +1769,180 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
     });
   });
 
+  describe("standby (#2195)", () => {
+    const standby = (kind: string) => () =>
+      mkResponse({ available: true, running: false, standby: kind });
+
+    for (const kind of ["off", "awaiting-start", "idle"] as const) {
+      it(`${kind}: offers Start — never Restart, never a failure`, async () => {
+        globalThis.fetch = routedFetch({
+          launcher: standby(kind),
+          health: mkResponse({ status: "ok", hasSession: false }),
+        });
+        const h = mount();
+        await settle();
+        expect(h.get().state).toBe("stopped");
+        expect(h.get().launcherStandby).toBe(kind);
+        expect(h.get().chip).toBe("start");
+        expect(h.get().launcherFailure).toBeNull();
+        expect(h.get().launcherRestarting).toBe(false);
+      });
+    }
+
+    it("beside the stopped child's leftover live session: no failure button, standby still known", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: standby("off"),
+        health: mkResponse({ status: "ok", hasSession: true, sessionCount: 1 }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherStandby).toBe("off");
+      expect(h.get().launcherFailure).toBeNull();
+    });
+
+    it("Solo hides the chip, as for every other CTA", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: standby("idle"),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().chip).toBeNull();
+      expect(h.get().launcherStandby).toBe("idle");
+    });
+
+    it("a restart the server reports beside a standby is a start, not a restart", async () => {
+      let phase: "standby" | "pending" | "running" = "standby";
+      globalThis.fetch = routedFetch({
+        launcher: () =>
+          phase === "standby"
+            ? mkResponse({ available: true, running: false, standby: "off" })
+            : phase === "pending"
+              ? mkResponse({
+                  available: true,
+                  running: false,
+                  restartPending: true,
+                  standby: "off",
+                })
+              : mkResponse({ available: true, running: true, cwd: "/home/u/notes" }),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      phase = "pending";
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherRestarting).toBe(true);
+      expect(h.get().launcherStarting).toBe(true);
+      phase = "running";
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherStarting).toBe(false);
+    });
+
+    it("startsOnMessage (#2196): read from the status, and false without it", async () => {
+      let body: Record<string, unknown> = {
+        available: true,
+        running: false,
+        standby: "off",
+        startsOnMessage: true,
+      };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherStartsOnMessage).toBe(true);
+      body = { available: true, running: false, standby: "off" };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().launcherStartsOnMessage).toBe(false);
+    });
+
+    it("greetingLate (#2197): read from either arm, even in Solo; false without it", async () => {
+      let body: Record<string, unknown> = {
+        available: true,
+        running: true,
+        cwd: "/home/u",
+        greetingLate: true,
+      };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().greetingLate).toBe(true);
+      body = { available: true, running: false, lastError: "needs-login", greetingLate: true };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().greetingLate).toBe(true);
+      body = { available: true, running: true, cwd: "/home/u" };
+      h.get().refreshLauncherStatus();
+      await settle();
+      expect(h.get().greetingLate).toBe(false);
+    });
+
+    it("launcherRemedy (#2196) is chip's decision with neither of its gates", async () => {
+      let body: Record<string, unknown> = { available: true, running: false, standby: "off" };
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse(body),
+        // A live session hides `chip`; the remedy must survive it.
+        health: mkResponse({ status: "ok", hasSession: true, sessionCount: 1 }),
+      });
+      const h = mount({ soloMode: true });
+      await settle();
+      expect(h.get().chip).toBeNull();
+      expect(h.get().launcherRemedy).toBe("start");
+      const cases: Array<[Record<string, unknown>, string | null]> = [
+        [{ available: true, running: false, lastError: "needs-login" }, "sign-in"],
+        [{ available: true, running: false, lastError: "cli-unusable" }, "setup"],
+        [{ available: true, running: false, lastError: "spawn-failed" }, "restart"],
+        [{ available: false, reason: "not-configured" }, "connect"],
+        [{ available: false, reason: "deferred-autostart" }, null],
+        [{ available: true, running: false, restartPending: true, standby: "off" }, null],
+        [{ available: true, running: true, cwd: "/home/u" }, null],
+      ];
+      for (const [next, want] of cases) {
+        body = next;
+        h.get().refreshLauncherStatus();
+        await settle();
+        expect(h.get().launcherRemedy, JSON.stringify(next)).toBe(want);
+      }
+    });
+
+    it("a standby is 'recent' for its first minute only", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        globalThis.fetch = routedFetch({
+          launcher: standby("off"),
+          health: mkResponse({ status: "ok", hasSession: false }),
+        });
+        const h = mount();
+        await settle();
+        expect(h.get().launcherStandbyRecent).toBe(true);
+        vi.setSystemTime(Date.now() + 61_000);
+        h.get().refreshLauncherStatus();
+        await settle();
+        expect(h.get().launcherStandbyRecent).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("control: a restart with no standby before it is a restart", async () => {
+      globalThis.fetch = routedFetch({
+        launcher: () => mkResponse({ available: true, running: false, restartPending: true }),
+        health: mkResponse({ status: "ok", hasSession: false }),
+      });
+      const h = mount();
+      await settle();
+      expect(h.get().launcherRestarting).toBe(true);
+      expect(h.get().launcherStarting).toBe(false);
+    });
+  });
+
   /**
    * #1521: the licence refusal ranks FIRST. Solo is a privacy choice, the
    * refusal is a capability fact, and every other CTA would be refused by the
@@ -1797,6 +1994,9 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().chip).toBeNull();
       expect(on.get().state).toBe("booting");
+      // The ungated remedy waits too, or the chat panel's rows would offer a
+      // Restart the server answers 403 (#2196).
+      expect(on.get().launcherRemedy).toBeNull();
       expect(refreshLicence).toHaveBeenCalledTimes(1);
 
       // The re-read lands and the licence still admits AI; the launcher still
@@ -1805,6 +2005,7 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().state).toBe("stopped");
       expect(on.get().chip).toBe("restart");
+      expect(on.get().launcherRemedy).toBe("restart");
       expect(refreshLicence).toHaveBeenCalledTimes(1);
     });
 

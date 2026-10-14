@@ -85,6 +85,13 @@ function renderChat(onSend: () => boolean) {
       onClear: async () => {},
       onExport: async () => {},
       onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
+      tandemClaudeResume: null,
+      onResumeRemedy: () => {},
+      tandemClaudeGreetingLate: null,
+      onGreetingAction: () => {},
       aiDisabled: false,
     },
   });

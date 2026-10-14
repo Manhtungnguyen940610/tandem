@@ -119,6 +119,7 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), () => ({
     existing: [],
     picked: [],
     applyResults: [],
+    tandemClaude: null,
     errorMessage: null,
     channelRegistered: null,
     keychainUnavailable: false,
@@ -128,6 +129,10 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), () => ({
     setPicked: vi.fn(),
     submitSecret: vi.fn(async () => {}),
     cleanupUnsavedSecrets: vi.fn(async () => {}),
+    hasSetupToKeep: false,
+    keepError: null,
+    keepSetup: vi.fn(async () => true),
+    pickedForInstall: vi.fn(() => null),
   }),
   detectedToPicked: vi.fn(() => null),
 }));

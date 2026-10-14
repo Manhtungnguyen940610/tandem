@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeDoneHeaderState,
   pushSupportNote,
+  tandemClaudeDoneCopy,
 } from "../../src/client/components/integration-wizard-helpers.js";
 import { targetPushSupport } from "../../src/shared/integrations/contract.js";
 
@@ -77,6 +78,76 @@ describe("pushSupportNote (#1299)", () => {
     // `DetectedTarget["kind"]`, which is what `targetPushSupport` accepts).
     for (const kind of ["claude-code", "claude-desktop"] as const) {
       expect(pushSupportNote(kind) !== null).toBe(targetPushSupport(kind) === "none");
+    }
+  });
+});
+
+describe("tandemClaudeDoneCopy (#2197)", () => {
+  const stopped = { running: false, remedy: null, standby: null } as const;
+
+  it("says nothing without an answer to report", () => {
+    expect(tandemClaudeDoneCopy(null, null)).toBeNull();
+    expect(tandemClaudeDoneCopy("unknown", stopped)).toBeNull();
+  });
+
+  it("an answer that timed out is overruled by a Claude that is running now", () => {
+    expect(tandemClaudeDoneCopy("unknown", { ...stopped, running: true })).toMatch(
+      /^Tandem's own Claude is running/,
+    );
+  });
+
+  it("starting, then running: names Tandem's own Claude and where it talks", () => {
+    expect(tandemClaudeDoneCopy("starting", stopped)).toMatch(/^Tandem is starting its own Claude/);
+    expect(tandemClaudeDoneCopy("starting", { ...stopped, running: true })).toMatch(
+      /^Tandem's own Claude is running/,
+    );
+  });
+
+  it("a start that has since failed stops promising one", () => {
+    const line = tandemClaudeDoneCopy("starting", { ...stopped, remedy: "sign-in" });
+    expect(line).toMatch(/couldn't start/);
+    expect(line).not.toMatch(/starting/);
+  });
+
+  it.each([
+    ["off", "turned off"],
+    ["idle", "chat message starts it"],
+    ["awaiting-start", "click Start"],
+  ] as const)("held, standby %s", (standby, phrase) => {
+    expect(tandemClaudeDoneCopy("held", { ...stopped, standby })).toContain(phrase);
+  });
+
+  it("a start that has since settled into a standby says so, not 'starting'", () => {
+    const line = tandemClaudeDoneCopy("starting", { ...stopped, standby: "idle", remedy: "start" });
+    expect(line).toMatch(/stopped while it was idle/);
+  });
+
+  it("whatever the Apply answered, a Claude running now reads as running", () => {
+    for (const initial of ["held", "other-ai"] as const) {
+      expect(tandemClaudeDoneCopy(initial, { ...stopped, running: true })).toMatch(
+        /^Tandem's own Claude is running/,
+      );
+    }
+  });
+
+  it("held over a diagnosis points at it, not at Start", () => {
+    const line = tandemClaudeDoneCopy("held", { ...stopped, remedy: "restart" });
+    expect(line).toMatch(/is stopped/);
+    expect(line).not.toMatch(/click Start/);
+  });
+
+  it.each([
+    ["other-ai", "another AI session"],
+    ["refused", "Settings → License"],
+    ["not-configured", "couldn't find the Claude Code setup it just saved"],
+  ] as const)("%s has its own line", (initial, phrase) => {
+    expect(tandemClaudeDoneCopy(initial, stopped)).toContain(phrase);
+  });
+
+  it("never claims a hello on a re-run: 'on a first run' qualifies it", () => {
+    for (const live of [stopped, { ...stopped, running: true }]) {
+      const line = tandemClaudeDoneCopy("starting", live) ?? "";
+      if (line.includes("hello")) expect(line).toContain("on a first run");
     }
   });
 });

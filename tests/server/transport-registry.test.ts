@@ -4,6 +4,7 @@ import {
   countDistinctClients,
   createMcpSessionRegistry,
   hasLiveEntryFor,
+  hasLiveEntryOtherThan,
   isLiveEntry,
   LIVE_RECENT_MS,
 } from "../../src/server/mcp/transport-registry.js";
@@ -388,5 +389,66 @@ describe("isLiveEntry", () => {
   // making requests, but the reaper keeps the entry for up to ~35 min.
   it("is not live with no stream once the recent window has passed", () => {
     expect(isLiveEntry({ openStreams: 0, lastSeenAt: NOW - LIVE_RECENT_MS }, NOW)).toBe(false);
+  });
+});
+
+describe("hasLiveEntryOtherThan (#2196)", () => {
+  const OWN = "11111111-1111-4111-8111-111111111111";
+  const OTHER = "22222222-2222-4222-8222-222222222222";
+  const NOW = 100_000;
+  const streaming = { openStreams: 1, lastSeenAt: 0 };
+  const recent = { openStreams: 0, lastSeenAt: NOW - 1_000 };
+  const stale = { openStreams: 0, lastSeenAt: NOW - LIVE_RECENT_MS - 1 };
+
+  it("an empty registry has no other AI", () => {
+    expect(hasLiveEntryOtherThan([], new Set([OWN]), NOW)).toBe(false);
+  });
+
+  it("Tandem's own just-stopped child, still live-looking, is not another AI — case-folded", () => {
+    expect(hasLiveEntryOtherThan([{ claudeSessionId: OWN, ...recent }], new Set([OWN]), NOW)).toBe(
+      false,
+    );
+    expect(
+      hasLiveEntryOtherThan(
+        [{ claudeSessionId: OWN.toUpperCase(), ...streaming }],
+        new Set([OWN]),
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("a live entry from a different Claude session is another AI", () => {
+    expect(
+      hasLiveEntryOtherThan([{ claudeSessionId: OTHER, ...streaming }], new Set([OWN]), NOW),
+    ).toBe(true);
+    expect(
+      hasLiveEntryOtherThan([{ claudeSessionId: OTHER, ...recent }], new Set([OWN]), NOW),
+    ).toBe(true);
+  });
+
+  it("a live entry with no Claude session id is someone else", () => {
+    expect(
+      hasLiveEntryOtherThan([{ claudeSessionId: undefined, ...recent }], new Set([OWN]), NOW),
+    ).toBe(true);
+  });
+
+  it("a stale entry is nobody", () => {
+    expect(hasLiveEntryOtherThan([{ claudeSessionId: OTHER, ...stale }], new Set([OWN]), NOW)).toBe(
+      false,
+    );
+  });
+
+  it("before the first spawn there is no own id, so every live entry counts", () => {
+    expect(
+      hasLiveEntryOtherThan([{ claudeSessionId: OWN, ...recent }], new Set<string>(), NOW),
+    ).toBe(true);
+  });
+  it("every own id is excluded — a start-fresh's replaced child is not another AI", () => {
+    const entries = [
+      { claudeSessionId: OWN, ...recent },
+      { claudeSessionId: OTHER, ...recent },
+    ];
+    expect(hasLiveEntryOtherThan(entries, new Set([OWN]), NOW)).toBe(true);
+    expect(hasLiveEntryOtherThan(entries, new Set([OWN, OTHER]), NOW)).toBe(false);
   });
 });

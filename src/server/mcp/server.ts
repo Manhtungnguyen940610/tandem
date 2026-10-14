@@ -32,6 +32,7 @@ import { registerIntegrationsRoutes } from "../integrations/api-routes.js";
 import { readExistingTandemEntries } from "../integrations/existing-config.js";
 import { createKeychain, KEYCHAIN_SERVICE_MODELS } from "../integrations/keychain.js";
 import { createIntegrationsStore } from "../integrations/storage.js";
+import { isWalkthroughPending, markWalkthroughConfirmed } from "../integrations/walkthrough.js";
 import { type AiRefusal, aiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import { registerModelsRoutes } from "../models/api-routes.js";
 import { resolveAppDataDir, SESSION_DIR } from "../platform.js";
@@ -59,6 +60,7 @@ import {
   countDistinctClients,
   createMcpSessionRegistry,
   hasLiveEntryFor,
+  hasLiveEntryOtherThan,
   isLiveEntry,
   type McpSessionEntry,
   type McpSessionRegistry,
@@ -600,6 +602,13 @@ export function isClaudeSessionAttached(claudeSessionId: string, sinceMs: number
   return sessions ? hasLiveEntryFor(sessions.list(), claudeSessionId, sinceMs) : false;
 }
 
+/** Whether an MCP client other than the Claude sessions `ownClaudeSessionIds`
+ * is live — the launcher supervisor's `otherAiAttached` (#2196), wired in
+ * `index.ts`. See `hasLiveEntryOtherThan`. */
+export function isOtherMcpClientLive(ownClaudeSessionIds: ReadonlySet<string>): boolean {
+  return sessions ? hasLiveEntryOtherThan(sessions.list(), ownClaudeSessionIds, Date.now()) : false;
+}
+
 /**
  * Run one idle-reap pass, returning how many sessions it closed.
  *
@@ -1106,20 +1115,19 @@ export async function startMcpServerHttp(
     readExisting: readExistingTandemEntries,
     serverVersion: APP_VERSION,
     // A wizard Apply that wrote a claude-code entry refreshes the launcher's
-    // "configured" answer (#2180), so the pill stops offering setup the user
-    // just finished. It does not start Claude: whether it should is still
-    // open. The `.catch` is load-bearing: an unhandled rejection exits the
-    // server (#2125).
-    onClaudeCodeApplied: launcher
-      ? () => {
-          launcher
-            .getSupervisor()
-            ?.refreshConfigured()
-            .catch((err: unknown) => {
-              console.error("[Tandem] Refreshing the launcher after setup failed:", err);
-            });
-        }
-      : undefined,
+    // "configured" answer (#2180) and starts Tandem's Claude when it should
+    // (#2197). With no supervisor yet (deferred autostart, disabled by env,
+    // or the moment between bind and `startLauncherSupervisor`) the answer is
+    // `undefined` → "unknown": the boot start reads the new entry itself.
+    // `startAfterSetup` never rejects, and the route guards it anyway (#2125).
+    onClaudeCodeApplied: launcher ? () => launcher.getSupervisor()?.startAfterSetup() : undefined,
+    // The v1.0 walkthrough marker (#2198): the first-run GET reads it, Keep
+    // and a successful Apply write it. The supervisor's boot hold reads the
+    // same predicate (wired in index.ts).
+    walkthrough: {
+      isPending: () => isWalkthroughPending(resolveAppDataDir(), APP_VERSION),
+      markConfirmed: (via) => markWalkthroughConfirmed(resolveAppDataDir(), APP_VERSION, via),
+    },
   });
 
   // --- Auto-launcher endpoints (#477 PR 4b) ---
@@ -1137,6 +1145,7 @@ export async function startMcpServerHttp(
       unavailableReason: launcher.unavailableReason,
       startSupervisor: launcher.startSupervisor,
       store: createIntegrationsStore(resolveAppDataDir()),
+      settingsBase: resolveAppDataDir(),
       getSkillRefreshError,
       isClaudeSessionAttached,
       // Tandem's own auto-opened documents. `welcome.md` opens on first run and

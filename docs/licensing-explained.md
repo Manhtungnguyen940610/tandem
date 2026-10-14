@@ -445,7 +445,7 @@ and those are where `aiRefusal()` is consulted:
 
 - The MCP session handshake — rows 1 and 2 together.
 - `appendClaudeChatMessage()` — every AI chat write: `tandem_reply`, `POST /api/channel-reply`, the collaborator.
-- `pushEvent` plus `subscribe(cb, "external")` — every push consumer: SSE `/api/events`, WS `/api/wake`, the supervisor's stdin.
+- `pushEvent` plus `subscribe(cb, "external")` — every push consumer: SSE `/api/events`, WS `/api/wake`, the supervisor's stdin. The supervisor's gap and standby watches subscribe `"internal"` and read the push's own verdict (`wasForwardedExternally`), so a refused event neither owes a wake nor starts Claude for a message (#2196).
 - The supervisor's spawn — the launcher's own Claude Code.
 - The collaborator's per-run check — row 6.
 
