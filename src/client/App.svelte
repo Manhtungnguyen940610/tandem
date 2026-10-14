@@ -771,7 +771,7 @@ $effect(() => {
 
     // The branching lives in the pure, exhaustive `noticeAction`; App only pushes
     // what it returns. The CTA is dispatched through `ctaHandler`, never a binary
-    // ternary: `chip` has five non-null members, and a `=== "connect"` test once
+    // ternary: `chip` has six non-null members, and a `=== "connect"` test once
     // sent `setup` (Claude CLI not installed) down the restart branch.
     const toast = noticeAction(notice, noun);
     const cta = toast.cta;

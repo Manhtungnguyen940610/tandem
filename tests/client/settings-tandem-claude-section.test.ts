@@ -217,6 +217,43 @@ describe("SettingsTandemClaudeSection", () => {
     expect(auto.closest("fieldset")?.disabled).toBe(false);
   });
 
+  it("an unreadable file the supervisor kept going on says it is keeping them, not 'waiting for Start'", async () => {
+    getBody = () => ({
+      settings: { ...stored, startMode: "auto" },
+      unreadable: true,
+      keptLastGood: true,
+    });
+    const { container } = render(SettingsTandemClaudeSection);
+    await flush();
+    const hint = (
+      q(container, "settings-modal-tandem-claude-unreadable").textContent ?? ""
+    ).replace(/\s+/g, " ");
+    expect(hint).toContain("keeping the ones it last read");
+    expect(hint).not.toContain("click Start");
+    expect(q<HTMLInputElement>(container, "settings-modal-tandem-claude-start-auto").checked).toBe(
+      true,
+    );
+  });
+
+  it("an Off that stopped Claude but was not saved says so, and still tells the status bar", async () => {
+    stored = { ...stored, startMode: "auto" };
+    postResponder = () => json(409, { code: "LAUNCHER_OFF_NOT_SAVED", message: "server text" });
+    const seen = vi.fn();
+    window.addEventListener("tandem:launcher-changed", seen);
+    try {
+      const { container } = render(SettingsTandemClaudeSection);
+      await flush();
+      await fireEvent.click(q(container, "settings-modal-tandem-claude-start-off"));
+      await flush();
+      expect(q(container, "settings-modal-tandem-claude-save-error").textContent).toContain(
+        "off now",
+      );
+      expect(seen).toHaveBeenCalledOnce();
+    } finally {
+      window.removeEventListener("tandem:launcher-changed", seen);
+    }
+  });
+
   it("a queued change is not snapped back when the save ahead of it lands", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => {

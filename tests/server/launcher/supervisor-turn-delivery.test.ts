@@ -1758,6 +1758,28 @@ describe("#2195 — Start (startByUser)", () => {
     expect(readLauncherSettingsFile().startMode).toBe("on-click");
   });
 
+  it("from off over an unreadable file, keeps the lifetime it last read — on disk and in the child", async () => {
+    writeLauncherSettingsFile({ startMode: "off", lifetime: "idle", idleMinutes: 1 });
+    const { sup } = makeSupervisor({ idleMinuteMs: 40 });
+    await sup.start();
+    fs.writeFileSync(path.join(baseDir, "launcher-settings.json"), "{ truncated");
+    await sup.startByUser();
+    const child1 = await nthChild(1);
+    expect(readLauncherSettingsFile()).toMatchObject({
+      startMode: "on-click",
+      lifetime: "idle",
+      idleMinutes: 1,
+    });
+    expect(sup.appliedSettings()).toEqual({
+      startMode: "on-click",
+      lifetime: "idle",
+      idleMinutes: 1,
+    });
+    // The child runs by "stop when idle", not the fallback's "always".
+    pushJson(child1, RESULT_OK);
+    await waitFor(() => child1.killed, "the idle stop");
+  });
+
   it("a relaunch from off saves on-click too, so Settings never says Off beside a running Claude", async () => {
     writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
     const { sup } = makeSupervisor();
@@ -2293,6 +2315,24 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
     expect(texts(child2)).toEqual([]);
   });
 
+  it("every child it spawned counts as its own, not only the last — a start-fresh leaves no 'other AI'", async () => {
+    // The first child's entry is still live (a stopped child's lingers up to a
+    // minute); anything live outside the set reads as another AI.
+    const live: string[] = [];
+    const { sup, emit } = makeSupervisor({
+      otherAiAttached: (own) => live.some((id) => !own.has(id)),
+    });
+    await sup.startFresh(cwdDir);
+    const first = sup.status();
+    if (!first.running) throw new Error("not running");
+    live.push(first.sessionId);
+    await sup.startFresh(cwdDir);
+    await nthChild(2);
+    await sup.updateSettings({ startMode: "off" });
+    emit(chatEvent());
+    await nthChild(3);
+  });
+
   it("another AI attaching before the start gets the lock still stops it", async () => {
     let calls = 0;
     const { emit } = await stoppedByChoice("off", {
@@ -2483,7 +2523,7 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
     expect(children).toHaveLength(1);
   });
 
-  it("a message start does not reset a tripped crash breaker", async () => {
+  it("a message never starts a Claude whose crash breaker tripped; Start does, and resets it", async () => {
     const { sup, emit } = makeSupervisor({ restartBackoffsMs: [0] });
     await sup.startFresh(cwdDir);
     for (let n = 1; ; n++) {
@@ -2494,18 +2534,29 @@ describe("#2196 — a message starts a Claude that is stopped by choice", () => 
       await waitFor(() => sup.status().running, `restart ${n}`);
     }
     expect(sup.status()).toMatchObject({ running: false, lastError: "circuit-open" });
-    // The user turns it off; a chat then starts it once.
+    // The user turns it off. Nothing promises that a chat starts it…
     await sup.updateSettings({ startMode: "off" });
-    emit(chatEvent());
+    expect(sup.status()).toEqual({ running: false, standby: "off" });
+    // …and a chat does not.
     const before = children.length;
-    const next = await nthChild(before + 1);
-    await waitFor(() => sup.status().running, "the message start");
-    // It crashes again. The breaker still counts, so it is not restarted.
-    exitChild(next, 1);
+    emit(chatEvent());
     await sleep(50);
     await settle();
-    expect(children).toHaveLength(before + 1);
-    expect(sup.status().running).toBe(false);
+    expect(children).toHaveLength(before);
+    // Start does, and clears the breaker: its next crash is restarted.
+    await sup.startByUser();
+    const next = await nthChild(before + 1);
+    exitChild(next, 1);
+    await nthChild(before + 2);
+  });
+
+  it("status never promises a message start once shutdown has begun", async () => {
+    const { sup } = await stoppedByChoice("off", { otherAiAttached: () => false });
+    // While the stop is still running, as well as after it.
+    const stopping = sup.stop();
+    expect(sup.status()).not.toHaveProperty("startsOnMessage");
+    await stopping;
+    expect(sup.status()).not.toHaveProperty("startsOnMessage");
   });
 
   it("status says a message would start Claude only in standby with nothing in the way", async () => {

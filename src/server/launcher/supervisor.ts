@@ -531,6 +531,9 @@ export interface Supervisor {
    * newer Tandem wrote.
    */
   updateSettings(patch: LauncherSettingsPatch): Promise<LauncherSettings>;
+  /** The settings this supervisor last read or saved successfully, or null
+   * before any. What it is acting on while the file cannot be read. */
+  appliedSettings(): LauncherSettings | null;
 }
 
 /** What `relaunch` / `startFresh` did. `no-integration`: the plan found no
@@ -1238,7 +1241,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // `standby` is re-read although the watch is armed only while it is set:
       // a fan-out already in progress can still reach a callback that an
       // earlier subscriber's handler unsubscribed.
-      if (standby === undefined || !isStartWorthy(event) || anotherAiOn()) return;
+      // Never beside a tripped breaker: a chat is not a decision to retry a
+      // Claude that kept crashing, and a message start must not leave the
+      // breaker tripped under a running child either (a later crash would then
+      // get no restart and no diagnosis). Start, which resets it, is the way.
+      if (standby === undefined || breakerTripped || !isStartWorthy(event) || anotherAiOn()) {
+        return;
+      }
       wakeOwedAcrossSpawns = true;
       if (messageStartQueued) return;
       messageStartQueued = true;
@@ -1258,7 +1267,9 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     await withLock(async () => {
       // Re-checked under the lock: the user's own Start, a shutdown or another
       // AI attaching may all have landed while this waited.
-      if (shuttingDown || standby === undefined || isAlive() || anotherAiOn()) return;
+      if (shuttingDown || standby === undefined || breakerTripped || isAlive() || anotherAiOn()) {
+        return;
+      }
       console.error("[Launcher] A message arrived while Claude was stopped — starting it");
       // Owed again here, not only in the watch: a Turn off that took the lock
       // between the message and this start cleared it (#1866), and this start
@@ -2792,9 +2803,10 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     await stopInternal();
     if (clearSession) clearSavedSession();
     // relaunch/startFresh always mean "user is actively asking" → clear breaker.
-    // A start for a message does not (#2196): a chat is not a decision to try
-    // a Claude that kept crashing again, and nothing else bounds how often one
-    // can arrive.
+    // A start for a message never runs beside a tripped breaker (the standby
+    // watch and `startForMessage` both refuse it), so it has none to clear; it
+    // leaves the attempt history alone too, so a message start cannot reset
+    // the count of a Claude that is crashing now (#2196).
     if (!byMessage) {
       breakerTripped = false;
       recentAttempts = [];
@@ -2914,7 +2926,14 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * cost of a failed write is that the next launch reads the old mode. */
   async function persistStartMode(mode: LauncherSettings["startMode"]): Promise<void> {
     try {
-      lastGoodSettings = await updateLauncherSettings(opts.integrationsBase, { startMode: mode });
+      // Over an unreadable file, the fields this does not touch come from the
+      // last good read, as in `updateSettings`: a Start from Off must not also
+      // save the default lifetime over the user's "stop when idle".
+      lastGoodSettings = await updateLauncherSettings(
+        opts.integrationsBase,
+        { startMode: mode },
+        lastGoodSettings,
+      );
     } catch (err) {
       console.error(`[Launcher] Could not save start mode "${mode}":`, err);
     }
@@ -3073,7 +3092,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // forwarded, so it never reaches the watch) and `decideRefusal` here. The
       // in-memory check goes first: once the licence gate ships, `decideRefusal`
       // reads the licence file, and this runs on every status poll.
-      if (!anotherAiOn() && decideRefusal() === null) {
+      if (!shuttingDown && !breakerTripped && !anotherAiOn() && decideRefusal() === null) {
         stopped.startsOnMessage = true;
       }
     }
@@ -3227,6 +3246,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     licenceRefusal,
     startByUser,
     updateSettings,
+    appliedSettings: () => (lastGoodSettings ? { ...lastGoodSettings } : null),
   };
 }
 
