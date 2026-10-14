@@ -219,6 +219,32 @@ export function hasLiveEntryFor(
   );
 }
 
+/**
+ * Whether a LIVE entry from any client other than the Claude sessions in
+ * `ownClaudeSessionIds` is in the registry — the launcher's "is another AI on?"
+ * (#2196), which keeps a chat message from starting Tandem's Claude while the
+ * user's own AI is attached to answer it.
+ *
+ * Liveness is `isLiveEntry`, the same rule `/health`'s `sessionCount` uses, so
+ * the chat panel and the launcher agree on who is attached. The own ids are
+ * excluded because each of Tandem's stopped children keeps a live-looking entry
+ * for up to `LIVE_RECENT_MS`; an entry with NO Claude session id (a client that
+ * sends no `X-Claude-Session-Id`) is always someone else, so it counts — which
+ * fails toward not starting a second AI.
+ */
+export function hasLiveEntryOtherThan(
+  entries: ReadonlyArray<Pick<McpSessionEntry, "claudeSessionId" | "openStreams" | "lastSeenAt">>,
+  ownClaudeSessionIds: ReadonlySet<string>,
+  now: number,
+): boolean {
+  const own = new Set([...ownClaudeSessionIds].map(claudeIdKey));
+  return entries.some(
+    (e) =>
+      isLiveEntry(e, now) &&
+      (e.claudeSessionId === undefined || !own.has(claudeIdKey(e.claudeSessionId))),
+  );
+}
+
 const DEFAULT_MAX_SESSIONS = 16;
 const DEFAULT_IDLE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 

@@ -60,6 +60,7 @@ import { createAccentHue } from "./hooks/useAccentHue.svelte";
 import {
   AI_CTA,
   type AiCtaAction,
+  type AiRemedy,
   createAiReadiness,
   ctaHandler,
 } from "./hooks/useAiReadiness.svelte";
@@ -133,6 +134,7 @@ import MarginColumn from "./panels/MarginColumn.svelte";
 import { isLeftMarginAnnotation, isRightMarginAnnotation } from "./panels/marginSides";
 import PeekStrip from "./panels/PeekStrip.svelte";
 import { useAnnotationReview } from "./panels/useAnnotationReview.svelte";
+import { createChatResume } from "./panels/useChatResume.svelte";
 import FormattingBar from "./shell/FormattingBar.svelte";
 import TitleBar from "./shell/TitleBar.svelte";
 import { addressedAiNotice, noticeAction } from "./status/addressed-ai-notice.js";
@@ -637,19 +639,35 @@ function turnOffClaude(): void {
   turnOffTandemClaude();
 }
 
+/** The chat panel's resume row (#2196): a chat sent while Tandem's Claude was
+ *  stopped by choice, which the server is starting it to answer. */
+const chatResumeState = createChatResume(aiReadiness, refreshAiReadinessAfterLauncherAction, () => {
+  let latest: number | null = null;
+  for (const m of chatState.messages) {
+    if (m.author === "claude" && (latest === null || m.timestamp > latest)) latest = m.timestamp;
+  }
+  return latest;
+});
+
 /** The chat panel's Start / Turn off control (#2195): Turn off while Tandem's
  *  Claude runs, Start while it is in standby, hidden otherwise (no launcher,
  *  a failure — whose own CTA is elsewhere — or a restart in progress). */
 const tandemClaudeControl = $derived<"start" | "turn-off" | null>(
   aiReadiness.launcherRunning
     ? "turn-off"
-    : // Not while the licence refuses the AI (#1521): Start would be refused.
+    : // Not while the licence refuses the AI (#1521): Start would be refused;
+      // and hidden beside the resume row (#2196), which carries its own remedy.
       aiReadiness.aiNotice === null &&
         aiReadiness.launcherStandby !== null &&
-        !aiReadiness.launcherRestarting
+        !aiReadiness.launcherRestarting &&
+        chatResumeState.view === null
       ? "start"
       : null,
 );
+
+function onResumeRemedy(remedy: AiRemedy): void {
+  aiCtaHandler(AI_CTA[remedy].action)();
+}
 
 /** Every `AiCtaAction` → its handler, through the one dispatcher
  *  (`ctaHandler`, #1268, #1521, #2195). A binary `action === "restart" ? … : …`
@@ -727,6 +745,7 @@ $effect(() => {
       sessionLive: probe.sessionLive,
       chip: aiReadiness.chip,
       pushDelivery: aiReadiness.pushDelivery,
+      startingForMessage: viaKey === "chat" && chatResumeState.pending,
     });
     if (notice === null) return;
 
@@ -2137,6 +2156,8 @@ function sendChatMessage(text: string): boolean {
   const sent = chatState.send(text, yjsSync.activeTabId ?? undefined, railContent.capturedAnchor);
   if (!sent) return false;
   railContent.setCapturedAnchor(null);
+  // Before the dispatch below, whose no-agent toast reads it (#2196).
+  chatResumeState.noteSent();
   window.dispatchEvent(new CustomEvent("tandem:addressed-ai", { detail: { via: "chat" } }));
   railContent.closeReveal();
   return true;
@@ -2717,6 +2738,8 @@ const shouldShowModelPicker = $derived(
             tandemClaudeControl={tandemClaudeControl}
             onStartClaude={startClaude}
             onTurnOffClaude={turnOffClaude}
+            tandemClaudeResume={chatResumeState.view}
+            {onResumeRemedy}
             visible={chatVisible}
             aiDisabled={licenseStore.ui.aiOff}
           />

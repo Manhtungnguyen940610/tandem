@@ -30,7 +30,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { TandemEvent } from "../../shared/events/types.js";
-import { isWakeWorthy } from "../../shared/events/wake-scope.js";
+import { isStartWorthy, isWakeWorthy } from "../../shared/events/wake-scope.js";
 import type {
   ClaudeCodeIntegration,
   IntegrationConfig,
@@ -180,6 +180,29 @@ interface SupervisorOpts {
    * both the spawn plan and `updateSettings`.
    */
   idleMinuteMs?: number;
+  /**
+   * Seam onto the event fan-out for the standby watch (#2196): the
+   * subscription held while Tandem's Claude is not running by choice, so a
+   * chat message can start it. Defaults to `defaultSubscribeDuringGap` — the
+   * same `"internal"` + `wasForwardedExternally` subscription the gap watch
+   * uses, for the same reasons: it delivers nothing, so it must not count as a
+   * consumer, and the Solo gate and the licence refusal are decided once by the
+   * push, never again here.
+   */
+  subscribeDuringStandby?: (cb: (event: TandemEvent) => void) => () => void;
+  // Production must keep the default: `isStartWorthy` decides only "addressed
+  // to Claude", never "may Claude see it", and relies on this subscription for
+  // the Solo and licence half (the real-queue test pins the default).
+  /**
+   * Whether an AI session OTHER than Tandem's own Claude is live (#2196;
+   * Bryan: "Not if another AI is on"). Given the Claude session ids of every
+   * child this supervisor has spawned, so their leftover MCP entries — live
+   * for up to a minute after a stop or a start-fresh — are not mistaken for
+   * someone else's. A seam because the registry lives in `mcp/server.ts`,
+   * which this module must not import; `index.ts` wires it. The default is
+   * `() => false`, which is today's single-AI behaviour.
+   */
+  otherAiAttached?: (ownClaudeSessionIds: ReadonlySet<string>) => boolean;
 }
 
 /**
@@ -517,6 +540,9 @@ export type SupervisorStatus =
        * choice. Beside `restartPending` it means a Start from standby is in
        * progress. */
       standby?: LauncherStandby;
+      /** Only beside `standby` (#2196): a chat message sent now would start
+       * Tandem's Claude — no other AI is attached and the licence admits it. */
+      startsOnMessage?: true;
     }
   | {
       running: true;
@@ -897,6 +923,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   const decideRefusal = opts.aiRefusal ?? aiRefusal;
   const readSettings = opts.readSettings ?? (() => readLauncherSettings(opts.integrationsBase));
   const idleMinuteMs = opts.idleMinuteMs ?? 60_000;
+  const subscribeDuringStandby = opts.subscribeDuringStandby ?? defaultSubscribeDuringGap;
+  const otherAiAttached = opts.otherAiAttached ?? (() => false);
   /**
    * Why Tandem's Claude is not running when nothing went wrong (#2195), or
    * undefined. Set by `stopByChoice` and by a start the settings held back;
@@ -1045,6 +1073,116 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   function disarmGapWatch(): void {
     gapUnsubscribe?.();
     gapUnsubscribe = null;
+  }
+
+  /** The Claude session ids of every child this supervisor has spawned, kept
+   * across their stops, so `otherAiAttached` can tell their leftover MCP
+   * entries from another AI's (#2196). A start-fresh changes the id, and the
+   * replaced child's entry still looks live for a minute. */
+  const ownChildSessionIds = new Set<string>();
+  /** Raised synchronously by the public `stop()` — shutdown — and lowered by
+   * `start()`. While up, no message starts Claude, whatever lands on the lock
+   * after it — including an Off that re-arms the standby watch (#2196). */
+  let shuttingDown = false;
+
+  /**
+   * The standby watch (#2196): unsubscribe fn while armed, else null. Armed
+   * exactly while `standby` is set — `setStandby` is the only writer of both —
+   * so a chat message (or a user reply on Claude's thread, `isStartWorthy`)
+   * reaching a Claude that is off, idle-stopped or waiting for its first Start
+   * starts it.
+   *
+   * The owed wake is recorded SYNCHRONOUSLY here, before `startForMessage`
+   * queues on the op lock: if another start (the user's Start, a relaunch)
+   * holds the lock and wins, its spawn still owes this message a wake turn.
+   * Recording it inside the locked body would lose the message to that race.
+   * In `off` this is the one thing that may set `wakeOwedAcrossSpawns`
+   * (#1866): the gap watch is disarmed there, and this message is owed only
+   * because it is starting Claude to answer it.
+   *
+   * Not with another AI attached: the user's own AI answers, and starting a
+   * second one would be work nobody asked for.
+   */
+  let standbyUnsubscribe: (() => void) | null = null;
+  /** A message's start is queued on the op lock or running (#2196). One at a
+   * time: a burst records its owed wake and leaves the queued start to answer
+   * it. Counts toward `restartPending`, so the status reads "Starting" from
+   * the moment the message lands rather than once the lock frees up. */
+  let messageStartQueued = false;
+
+  /** Is an AI other than Tandem's own last child live? */
+  function anotherAiOn(): boolean {
+    return otherAiAttached(ownChildSessionIds);
+  }
+
+  function setStandby(next: LauncherStandby | undefined): void {
+    standby = next;
+    if (next === undefined) {
+      standbyUnsubscribe?.();
+      standbyUnsubscribe = null;
+      return;
+    }
+    if (standbyUnsubscribe) return;
+    standbyUnsubscribe = subscribeDuringStandby((event) => {
+      // `standby` is re-read although the watch is armed only while it is set:
+      // a fan-out already in progress can still reach a callback that an
+      // earlier subscriber's handler unsubscribed.
+      // Never beside a tripped breaker: a chat is not a decision to retry a
+      // Claude that kept crashing, and a message start must not leave the
+      // breaker tripped under a running child either (a later crash would then
+      // get no restart and no diagnosis). Start, which resets it, is the way.
+      if (standby === undefined || breakerTripped || !isStartWorthy(event) || anotherAiOn()) {
+        return;
+      }
+      wakeOwedAcrossSpawns = true;
+      if (messageStartQueued) return;
+      messageStartQueued = true;
+      // `startForMessage` catches what it can; this catches the rest, because
+      // an unhandled rejection exits the server (#2125).
+      startForMessage().catch((err: unknown) => {
+        console.error("[Launcher] Starting Claude for a message failed:", err);
+      });
+    });
+  }
+
+  /** Start Tandem's Claude for a message that reached it in standby (#2196).
+   * Never throws: it runs off the event fan-out, which has no caller to report
+   * to, so a failure is left where the user can see it — `lastError`, or the
+   * licence and not-configured states `respawn` already records. */
+  async function startForMessage(): Promise<void> {
+    await withLock(async () => {
+      // Re-checked under the lock: the user's own Start, a shutdown or another
+      // AI attaching may all have landed while this waited.
+      if (shuttingDown || standby === undefined || breakerTripped || isAlive() || anotherAiOn()) {
+        return;
+      }
+      console.error("[Launcher] A message arrived while Claude was stopped — starting it");
+      // Owed again here, not only in the watch: a Turn off that took the lock
+      // between the message and this start cleared it (#1866), and this start
+      // still exists only to answer that message.
+      wakeOwedAcrossSpawns = true;
+      try {
+        const result = await respawn(undefined, undefined, {
+          clearSession: false,
+          byMessage: true,
+        });
+        if (!result.spawned) {
+          console.error(`[Launcher] Could not start Claude for the message: ${result.why}`);
+        }
+      } catch (err) {
+        if (err instanceof LicenseRefusedError) {
+          console.error("[Launcher] Could not start Claude for the message: unlicensed");
+          return;
+        }
+        // A throw from the settings or plan read records nothing on its own;
+        // without this the message would sit unanswered beside a pill that
+        // still offers Start as if nothing had been tried.
+        if (child === null && lastError === undefined) lastError = "spawn-failed";
+        console.error("[Launcher] Could not start Claude for the message:", err);
+      }
+    }).finally(() => {
+      messageStartQueued = false;
+    });
   }
 
   /**
@@ -1404,7 +1542,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * drops the gap watch; `awaiting-start` keeps it, so a message sent before the
    * first Start is waiting for the spawn that Start makes. */
   function holdInStandby(kind: LauncherStandby): void {
-    standby = kind;
+    setStandby(kind);
     if (kind === "off") {
       wakeOwedAcrossSpawns = false;
       disarmGapWatch();
@@ -1515,7 +1653,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     lastError = undefined;
     lastRefusal = null;
     deliveryKillAt = undefined;
-    standby = undefined;
+    setStandby(undefined);
+    ownChildSessionIds.add(plan.sessionId);
 
     // One timestamp for the spawn: the exit handler's `ranFor` and the status
     // route's attachment match must agree on when this child started.
@@ -2417,6 +2556,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   }
 
   async function start(): Promise<void> {
+    shuttingDown = false;
     return withLock(async () => {
       if (child || breakerTripped) return;
       // The settings read counts as launching, so a status poll during it
@@ -2477,7 +2617,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   async function respawn(
     cwdOverride: string | undefined,
     opts: RelocateOpts | undefined,
-    { clearSession }: { clearSession: boolean },
+    { clearSession, byMessage = false }: { clearSession: boolean; byMessage?: boolean },
   ): Promise<RespawnResult> {
     // Licence admission (#1521), at the very top — BEFORE `stopInternal`,
     // `clearSavedSession` and `persistRequestedCwd`, so a refused relaunch
@@ -2496,7 +2636,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // that is exactly the window that used to offer a Restart button.
     launching++;
     try {
-      return await stopAndSpawn(cwdOverride, opts, clearSession);
+      return await stopAndSpawn(cwdOverride, opts, clearSession, byMessage);
     } finally {
       launching--;
     }
@@ -2506,13 +2646,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     cwdOverride: string | undefined,
     opts: RelocateOpts | undefined,
     clearSession: boolean,
+    byMessage: boolean,
   ): Promise<RespawnResult> {
     await stopInternal();
     if (clearSession) clearSavedSession();
     // relaunch/startFresh always mean "user is actively asking" → clear breaker.
-    breakerTripped = false;
-    recentAttempts = [];
-    deliveryKillStreak = 0;
+    // A start for a message never runs beside a tripped breaker (the standby
+    // watch and `startForMessage` both refuse it), so it has none to clear; it
+    // leaves the attempt history alone too, so a message start cannot reset
+    // the count of a Claude that is crashing now (#2196).
+    if (!byMessage) {
+      breakerTripped = false;
+      recentAttempts = [];
+      deliveryKillStreak = 0;
+    }
     // stopInternal() raised the stop flag on the way in. Lower it before the
     // new spawn, or the exit handler treats the *next* crash as a deliberate
     // stop and silently declines to restart — the supervisor stays dead.
@@ -2520,9 +2667,18 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     userStopped = false;
     // `stopInternal` above has nulled `child`; see `planAndSpawn` (#2181).
     armGapWatch();
-    const settings = await readSettingsNow();
-    const plan = await buildPlan(cwdOverride);
-    if (!plan) return { spawned: false, why: "no-integration" };
+    let settings: LauncherSettings | undefined;
+    let plan: SpawnPlan | null = null;
+    try {
+      settings = await readSettingsNow();
+      plan = await buildPlan(cwdOverride);
+    } finally {
+      // No spawn is coming (no integration, or a read threw). From `off` the
+      // watch armed above owes it nothing (#1866); the standby watch still
+      // stands, so a later message can try again.
+      if (plan === null && standby === "off") disarmGapWatch();
+    }
+    if (!plan || !settings) return { spawned: false, why: "no-integration" };
     // A user start while the mode is `off` turns it back on as `on-click`
     // (#2195; Bryan's #2196 answer, applied to every user start). After the
     // plan, so a start that finds no integration changes nothing, and after
@@ -2534,7 +2690,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // Kept in step with the saved mode: if the spawn below fails, its error
       // outranks this anyway, and if it is retried the pill must not still say
       // "off" while Settings says "on click".
-      if (standby === "off") standby = "awaiting-start";
+      if (standby === "off") setStandby("awaiting-start");
     }
     await persistRequestedCwd(plan, cwdOverride, opts?.persistCwd);
     await spawnOnce(plan, idleMsFor(latestSettings(settings)));
@@ -2667,7 +2823,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       releaseTurnDelivery();
       armGapWatch();
     }
-    standby = kind;
+    setStandby(kind);
     await stopInternal();
   }
 
@@ -2708,7 +2864,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // Switching the mode back on does not start Claude by itself: the mode
         // is about launch, and a radio click that spawned a process would be
         // work nobody asked for. Start is one click away.
-        standby = "awaiting-start";
+        setStandby("awaiting-start");
         armGapWatch();
       }
       // Only a lifetime change restarts the clock; a start-mode change leaves it.
@@ -2724,12 +2880,18 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * runs `stopInternal` too, and a Restart after a crash must keep the wake the
    * crash owed. */
   async function stop(): Promise<void> {
+    // Synchronously, before the lock: a message start already queued AHEAD of
+    // this stop must not spawn a Claude that shutdown then SIGTERMs (#2196).
+    shuttingDown = true;
     return withLock(async () => {
       userStopped = true;
       userStopCount += 1;
       wakeOwedAcrossSpawns = false;
       // A crash may have armed the watch; a user stop carries nothing (#2181).
       disarmGapWatch();
+      // Shutdown: no message may start Claude after this (#2196); see
+      // `shuttingDown`.
+      setStandby(undefined);
       await stopInternal();
     });
   }
@@ -2768,7 +2930,18 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // Beside `restartPending` too: a pending restart with a standby is a START
     // from standby (`respawn` runs while `standby` is still set, until the
     // spawn clears it), which the client shows as "Starting Claude…".
-    if (standby !== undefined && lastError === undefined) stopped.standby = standby;
+    if (standby !== undefined && lastError === undefined) {
+      stopped.standby = standby;
+      // The conditions the standby watch applies, so the chat panel can promise
+      // "resuming" only when a message really will start Claude (#2196). The
+      // licence half is the push's own refusal there (a refused event is never
+      // forwarded, so it never reaches the watch) and `decideRefusal` here. The
+      // in-memory check goes first: once the licence gate ships, `decideRefusal`
+      // reads the licence file, and this runs on every status poll.
+      if (!shuttingDown && !breakerTripped && !anotherAiOn() && decideRefusal() === null) {
+        stopped.startsOnMessage = true;
+      }
+    }
     return stopped;
   }
 
@@ -2777,7 +2950,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * and the failure state must show. */
   function restartPending(): boolean {
     if (breakerTripped) return false;
-    if (restartTimer !== null || launching > 0) return true;
+    if (restartTimer !== null || launching > 0 || messageStartQueued) return true;
     // A delivery kill (#1867/#1868) marks the child killed before its exit
     // schedules the restart; bounded, see `DELIVERY_KILL_EXIT_GRACE_MS`.
     return (

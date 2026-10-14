@@ -6,12 +6,14 @@ import type { CapturedAnchor, ChatMessage } from "../../shared/types";
 import { scrollFade } from "../actions/scrollFade.svelte.js";
 import LiveRegion from "../components/LiveRegion.svelte";
 import { createAgentLabel } from "../hooks/useAgentLabel.svelte";
+import { AI_CTA } from "../hooks/useAiReadiness.svelte";
 import { flatOffsetToPmPos } from "../positions";
 import { agentColor } from "../utils/agent-color";
 import { AI_OFF_TITLE } from "../utils/license-ui";
 import { localChatDateLabel } from "./chat-export";
 import { renderMarkdown } from "./chat-markdown";
 import { chatPickup, chatPickupAnnouncement, chatPickupLabel } from "./chat-pickup";
+import { type ChatResume, chatResumeLabel } from "./chat-resume";
 import "./markdown-body.css";
 
 const TYPING_DOT_DELAYS = [0, 0.2, 0.4];
@@ -54,6 +56,15 @@ interface Props {
   onStartClaude: () => void;
   onTurnOffClaude: () => void;
   /**
+   * The "Claude is resuming…" row (#2196) — see `chat-resume.ts`. While it is
+   * set it REPLACES the pickup row: "waiting for your AI to pick it up" beside
+   * "Claude is resuming" would be two answers to one question. Required, with
+   * its handler, for the same PanelSlot reason as `tandemClaudeControl`.
+   */
+  tandemClaudeResume: ChatResume | null;
+  /** Runs the failed row's remedy (`AI_CTA[remedy].action`). */
+  onResumeRemedy: (remedy: Extract<ChatResume, { kind: "failed" }>["remedy"]) => void;
+  /**
    * The licence refuses the AI (#1521). Disables the composer and send; the
    * history stays fully readable. Required, with no default, so a mount that
    * forgets it fails to compile rather than fail open.
@@ -80,6 +91,8 @@ let {
   tandemClaudeControl,
   onStartClaude,
   onTurnOffClaude,
+  tandemClaudeResume,
+  onResumeRemedy,
   aiDisabled,
 }: Props = $props();
 
@@ -121,8 +134,14 @@ $effect(() => {
 // reads the real time in the same evaluation. (Re-showing a hidden panel also
 // lands on the current time; `chat-panel-pickup.test.ts` pins that outcome.)
 let now = $state(Date.now());
-const pickup = $derived(chatPickup(messages, Math.max(now, Date.now())));
+const pickup = $derived(
+  tandemClaudeResume ? null : chatPickup(messages, Math.max(now, Date.now())),
+);
 const pickupKind = $derived(pickup?.kind ?? null);
+// The primitive, for the scroll effect: `chatResume` returns a new object on
+// every recompute, and an effect reading the object would scroll a reader who
+// scrolled up back down on a change that moved nothing.
+const resumeKind = $derived(tandemClaudeResume?.kind ?? null);
 
 // Tick only while a row is showing in a panel that is not hidden, so the elapsed
 // count moves and the age cap can retire the row. Keyed on the primitive kind, so
@@ -143,7 +162,9 @@ $effect(() => {
 // update that adds it, and that one must still scroll.
 let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
-  const kind = pickupKind;
+  // The resume row too (#2196): its change to the taller failed row carries
+  // the remedy button, which must not land below the fold.
+  const kind = resumeKind ?? pickupKind;
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -460,32 +481,73 @@ async function exportChat() {
       </div>
     {/each}
 
-    {#if pickup}
+    {#snippet typingDots()}
+      <span style="display: inline-flex; gap: 3px;">
+        {#each TYPING_DOT_DELAYS as delay (delay)}
+          <!-- Only the per-dot delay stays inline: it is the one value that
+               varies across the three dots, and it is what makes them bounce
+               in sequence rather than in unison. Everything else moved into
+               `.chat-typing-dot` so the reduce-motion guard has a rule to
+               beat — an inline `animation` shorthand can only be overridden
+               with `!important`. -->
+          <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
+        {/each}
+      </span>
+    {/snippet}
+    {#if tandemClaudeResume?.kind === "resuming"}
       <div
         aria-hidden="true"
+        class="chat-status-row"
+        data-testid="chat-tandem-claude-resuming"
+        data-verb={tandemClaudeResume.verb}
+        style="color: var(--tandem-author-claude);"
+      >
+        {@render typingDots()}
+        <span>{chatResumeLabel(tandemClaudeResume)}</span>
+      </div>
+    {:else if tandemClaudeResume?.kind === "failed"}
+      {@const remedy = tandemClaudeResume.remedy}
+      <div
+        class="chat-status-row chat-status-row-wrap"
+        data-testid="chat-tandem-claude-resume-failed"
+        data-remedy={remedy}
+        style="color: var(--tandem-warning-fg-strong);"
+      >
+        <span aria-hidden="true">{chatResumeLabel(tandemClaudeResume)}</span>
+        <button
+          type="button"
+          class="chat-header-action"
+          data-testid="chat-tandem-claude-resume-remedy"
+          title={AI_CTA[remedy].title}
+          aria-label={AI_CTA[remedy].ariaLabel}
+          onclick={() => onResumeRemedy(remedy)}
+        >
+          {AI_CTA[remedy].label}
+        </button>
+      </div>
+    {:else if pickup}
+      <div
+        aria-hidden="true"
+        class="chat-status-row"
         data-testid="chat-pickup-status"
         data-pickup={pickup.kind}
-        style="padding: var(--tandem-space-2) var(--tandem-space-3); margin-bottom: var(--tandem-space-2); font-size: 12px; color: {pickup.kind === 'waiting' ? 'var(--tandem-fg-muted)' : 'var(--tandem-author-claude)'}; display: flex; align-items: center; gap: var(--tandem-space-2);"
+        style="color: {pickup.kind === 'waiting' ? 'var(--tandem-fg-muted)' : 'var(--tandem-author-claude)'};"
       >
         {#if pickup.kind === "working"}
-          <span style="display: inline-flex; gap: 3px;">
-            {#each TYPING_DOT_DELAYS as delay (delay)}
-              <!-- Only the per-dot delay stays inline: it is the one value that
-                   varies across the three dots, and it is what makes them bounce
-                   in sequence rather than in unison. Everything else moved into
-                   `.chat-typing-dot` so the reduce-motion guard has a rule to
-                   beat — an inline `animation` shorthand can only be overridden
-                   with `!important`. -->
-              <span class="chat-typing-dot" style="animation-delay: {delay}s"></span>
-            {/each}
-          </span>
+          {@render typingDots()}
         {/if}
         <span>{chatPickupLabel(pickup)}</span>
       </div>
     {/if}
     <!-- Announcer, not host: the row is a gapped flex item that comes and goes.
          Keyed on the kind only, so the ticking seconds are never read out. -->
-    <LiveRegion srOnly message={chatPickupAnnouncement(pickupKind)} data-testid="chat-pickup-live" />
+    <LiveRegion
+      srOnly
+      message={tandemClaudeResume
+        ? chatResumeLabel(tandemClaudeResume)
+        : chatPickupAnnouncement(pickupKind)}
+      data-testid="chat-pickup-live"
+    />
     <div bind:this={messagesEndEl}></div>
   </div>
 
@@ -628,6 +690,20 @@ async function exportChat() {
     height: 1px;
     flex: 1;
     background: var(--tandem-border);
+  }
+
+  /* The pickup row and the resume rows (#2196) share everything but colour. */
+  .chat-status-row {
+    padding: var(--tandem-space-2) var(--tandem-space-3);
+    margin-bottom: var(--tandem-space-2);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: var(--tandem-space-2);
+  }
+
+  .chat-status-row-wrap {
+    flex-wrap: wrap;
   }
 
   /* Typing indicator dots. The bounce is looping/ambient, so under reduced

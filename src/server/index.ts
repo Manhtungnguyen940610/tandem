@@ -49,6 +49,7 @@ import { shutdownSearchWorker } from "./mcp/search-worker.js";
 import {
   APP_VERSION,
   closeMcpSession,
+  isOtherMcpClientLive,
   startMcpServerHttp,
   startMcpServerStdio,
 } from "./mcp/server.js";
@@ -151,6 +152,9 @@ async function startLauncherSupervisor(): Promise<void> {
     launcherSupervisor = createSupervisor({
       integrationsBase: resolveAppDataDir(),
       reportDeliveryTrip: captureWarning,
+      // "Not if another AI is on" (#2196): a chat message starts Tandem's
+      // Claude only while no other MCP client is live.
+      otherAiAttached: isOtherMcpClientLive,
     });
     await launcherSupervisor.start();
   } catch (err) {

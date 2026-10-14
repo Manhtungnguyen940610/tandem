@@ -417,6 +417,19 @@ Whether Tandem runs its Claude is a setting of its own, separate from the claude
 - **What is owed across a standby:** `off` owes nothing, like a user stop (#1866). `idle` and `awaiting-start` keep the gap watch armed, so a chat sent while Claude is stopped is delivered by a wake turn on the spawn that brings it back.
 - **Writes are partial patches** (`POST /api/launcher/settings`), serialized in one queue, so a stale view cannot put back a field another window changed.
 
+### A message starts a stopped Claude (#2196)
+
+While any standby is set, the supervisor holds a **standby watch** — the same `"internal"` + `wasForwardedExternally` subscription as the gap watch, so Solo-held user content (dropped before fan-out) and licence-refused events never reach it. An event that is `isStartWorthy` (`src/shared/events/wake-scope.ts`) starts Claude through `respawn`, exactly like the user's Start: the licence check first, `off` saved as `on-click`, the saved session resumed.
+
+- **Start-worthy is narrower than wake-worthy:** a chat message, or a user's reply whose parent annotation Claude created (`AnnotationReplyPayload.parentAuthor === "claude"`). New comments, replies on other threads and accept/dismiss wait for the next start.
+- **Not while another AI is on** (Bryan, 2026-10-13). `otherAiAttached` — wired in `index.ts` to `isOtherMcpClientLive` — asks whether a live MCP entry exists from any Claude session but the supervisor's own children (every one it spawned, since a start-fresh changes the id), whose leftover entries stay live-looking for up to `LIVE_RECENT_MS`. An entry with no Claude session id counts as someone else. Checked in the watch callback and again under the op lock.
+- **The owed wake is set synchronously in the callback**, before the start queues on the lock, so a message that arrives while the user's own Start holds the lock rides on that spawn. In `off`, this is the only thing that sets `wakeOwedAcrossSpawns` (#1866) — the message is owed because it is starting Claude to answer it. It is set again under the lock, just before the spawn, because a Turn off that took the lock in between cleared it. A declined message (another AI on) is owed nothing.
+- **A burst makes one spawn:** one start is queued at a time (`messageStartQueued`); later messages only record their owed wake. The queued start counts toward `restartPending`, so the status reads "Starting" from the moment the message lands.
+- **Failures stay visible:** a licence refusal records `unlicensed`; no integration reads as not-configured; a throw from the settings or plan read records `spawn-failed`, because nothing else would.
+- **Shutdown:** the public `stop()` raises `shuttingDown` synchronously, before the lock, so a message start queued ahead of it or behind it starts nothing; `start()` lowers it.
+- **Not beside a tripped breaker:** a message never starts a Claude whose crash breaker has tripped (a crash loop or a sign-in stop, then Off). A chat is not a decision to retry a Claude that kept crashing; Start, which resets the breaker, is. The status then omits `startsOnMessage`, so the chat panel promises nothing. (Starting it without resetting the breaker, as #2196 first did, left the breaker tripped under a running child: its next crash got no restart and no diagnosis.)
+- **`startsOnMessage`** rides beside `standby` on `GET /api/launcher/status` (loopback-only) when a message would start Claude: in standby, no lastError, not shutting down, no tripped breaker, no other AI attached, and the licence admitting the AI — the watch's own conditions plus the licence, which the watch gets from the push's refusal. The chat panel's "Claude is resuming…" row (`src/client/panels/chat-resume.ts`) is promised only then, and stops promising 20 s after a send that no start followed.
+
 ### Activation
 
 The channel shim is registered **only on explicit request** — `tandem setup --apply --with-channel-shim`. There is deliberately **no wizard checkbox** — the CLI flag is the only opt-in, and three places claimed otherwise until 2026-08-09; the wizard's apply route calls `shouldRegisterChannelShim` with no override and so can only ever write the HTTP entry. It does not *remove* an existing shim either, because its `remove` list comes from the user's confirmed diff. It was default-on for the Claude Code target from #985 until Track E (see [Why `tandem-channel` Is Opt-In](#why-tandem-channel-is-opt-in) for why that default was doing harm). On the desktop bundle the wizard's apply path uses the channel-shim path injected into the sidecar via `TANDEM_CHANNEL_DIST` on spawn (resolved from the resource dir by `src-tauri/src/sidecar.rs`), since the server's own package-root derivation resolves outside the bundle.
@@ -480,13 +493,15 @@ brand, so the only way to construct an annotation-bearing payload is through
 | `document:opened` | New document opened in browser | `fileName`, `format` |
 | `document:closed` | Document closed | `fileName` |
 | `document:switched` | User switches tabs | `fileName` |
-| `annotation:reply` | Reply added to an annotation thread, by either author | `annotationId`, `replyId`, `replyText`, `replyAuthor`, `textSnippet` (the *parent's* snapshot) |
+| `annotation:reply` | Reply added to an annotation thread, by either author | `annotationId`, `replyId`, `replyText`, `replyAuthor`, `textSnippet` (the *parent's* snapshot), `parentAuthor` (#2196) |
 | `annotation:edited` | User edits their own comment's body and `editedAt` advances | `annotationId`, `content`, `textSnippet`, `editedAt` |
 
 Two fields carry more weight than they look. `replyAuthor` is what `isUserPrivacyHeld`
 (`events/queue.ts:205-214`) reads to decide whether a reply is held in Solo mode, and `editedAt`
 is half the channel de-duplication key for edits (`getAnnotationEditedChannelKey`), so an edit
 payload without it would collapse every edit of one annotation onto a single trackable id.
+`parentAuthor` is what decides whether a user's reply starts a stopped Tandem's Claude (#2196):
+only a reply on a thread Claude started does.
 
 ### Channel Shim Architecture
 

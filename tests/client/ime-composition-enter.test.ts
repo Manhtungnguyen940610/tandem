@@ -88,6 +88,8 @@ function renderChat(onSend: () => boolean) {
       tandemClaudeControl: null,
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
+      tandemClaudeResume: null,
+      onResumeRemedy: () => {},
       aiDisabled: false,
     },
   });

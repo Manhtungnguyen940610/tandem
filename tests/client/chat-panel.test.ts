@@ -1,10 +1,13 @@
 // @vitest-environment happy-dom
 
-import { fireEvent, render } from "@testing-library/svelte";
+import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { describe, expect, it, vi } from "vitest";
+import { AI_CTA } from "../../src/client/hooks/useAiReadiness.svelte";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
+import type { ChatResume } from "../../src/client/panels/chat-resume";
 import type { ChatMessage } from "../../src/shared/types";
+import { reactiveCell } from "../helpers/reactive-cell.svelte";
 
 function renderChat(messages: ChatMessage[]) {
   return render(ChatPanel, {
@@ -23,6 +26,8 @@ function renderChat(messages: ChatMessage[]) {
       onStartClaude: () => {},
       onTurnOffClaude: () => {},
       aiDisabled: false,
+      tandemClaudeResume: null,
+      onResumeRemedy: () => {},
     },
   });
 }
@@ -154,6 +159,8 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
         onStartClaude,
         onTurnOffClaude,
         aiDisabled: false,
+        tandemClaudeResume: null,
+        onResumeRemedy: () => {},
       },
     });
     const btn = result.container.querySelector<HTMLButtonElement>(
@@ -201,6 +208,8 @@ describe("ChatPanel — AI off by licence", () => {
         onExport: async () => {},
         onInsert: () => false,
         aiDisabled,
+        tandemClaudeResume: null,
+        onResumeRemedy: () => {},
         tandemClaudeControl: null,
         onStartClaude: () => {},
         onTurnOffClaude: () => {},
@@ -238,5 +247,115 @@ describe("ChatPanel — AI off by licence", () => {
     await fireEvent.keyDown(input, { key: "Enter" });
     expect(onSend).toHaveBeenCalledWith("hi there");
     unmount();
+  });
+});
+
+describe("ChatPanel — the resume row (#2196)", () => {
+  function renderWithResume(
+    resume: ChatResume | null | { value: ChatResume | null },
+    messages: ChatMessage[] = [],
+  ) {
+    const onResumeRemedy = vi.fn();
+    const cell = resume !== null && "value" in resume ? resume : null;
+    const props = {
+      messages,
+      editor: null,
+      activeDocId: null,
+      openDocs: [],
+      capturedAnchor: null,
+      onCapturedAnchorChange: () => {},
+      onSend: () => true,
+      onClear: async () => {},
+      onExport: async () => {},
+      onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
+      tandemClaudeResume: cell ? null : (resume as ChatResume | null),
+      onResumeRemedy,
+      aiDisabled: false,
+    };
+    // A getter reads the cell, so only this prop is reactive (#2196).
+    if (cell) {
+      Object.defineProperty(props, "tandemClaudeResume", {
+        get: () => cell.value,
+        enumerable: true,
+      });
+    }
+    const result = render(ChatPanel, { props });
+    const q = (id: string) => result.container.querySelector<HTMLElement>(`[data-testid='${id}']`);
+    return { ...result, q, onResumeRemedy };
+  }
+
+  const unread = (): ChatMessage =>
+    claudeMsg({ id: "u1", author: "user", text: "are you there?", timestamp: Date.now() });
+
+  it("resuming replaces the pickup row, and the one live region says resuming", () => {
+    // Positive control: the same unread message shows the pickup row with no resume.
+    expect(renderWithResume(null, [unread()]).q("chat-pickup-status")).not.toBeNull();
+    cleanup();
+    const { q } = renderWithResume({ kind: "resuming", verb: "resuming" }, [unread()]);
+    expect(q("chat-tandem-claude-resuming")?.textContent).toContain("Claude is resuming…");
+    expect(q("chat-pickup-status")).toBeNull();
+    expect(q("chat-pickup-live")?.textContent).toContain("Claude is resuming…");
+  });
+
+  it("scrolls when resuming turns into the failed row, so its remedy is in view", async () => {
+    const spy = vi.fn();
+    const orig = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      const { rerender } = renderWithResume({ kind: "resuming", verb: "starting" });
+      await tick();
+      spy.mockClear();
+      await rerender({ tandemClaudeResume: { kind: "failed", remedy: "start" } });
+      await tick();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = orig;
+    }
+  });
+
+  it("does not scroll again when the row is recomputed with nothing changed", async () => {
+    const spy = vi.fn();
+    const orig = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      // Only this prop changes, as in App: `rerender` would re-set every prop.
+      const cell = reactiveCell<ChatResume | null>({ kind: "resuming", verb: "starting" });
+      renderWithResume(cell);
+      await tick();
+      spy.mockClear();
+      // A fresh object with the same kind, as every `chatResume` recompute is.
+      cell.value = { kind: "resuming", verb: "starting" };
+      await tick();
+      expect(spy).not.toHaveBeenCalled();
+      // Control: a change of kind still scrolls.
+      cell.value = { kind: "failed", remedy: "start" };
+      await tick();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = orig;
+    }
+  });
+
+  it("says starting for a Claude that was off", () => {
+    const { q } = renderWithResume({ kind: "resuming", verb: "starting" });
+    expect(q("chat-tandem-claude-resuming")?.textContent).toContain("Starting Tandem's Claude…");
+  });
+
+  it("a failed start says the message is unanswered and its button runs the remedy", () => {
+    const { q, onResumeRemedy } = renderWithResume({ kind: "failed", remedy: "sign-in" }, [
+      unread(),
+    ]);
+    const row = q("chat-tandem-claude-resume-failed");
+    expect(row?.textContent).toContain("hasn't been answered");
+    // The row itself stays in the accessibility tree, so its button is reachable.
+    expect(row?.closest("[aria-hidden='true']")).toBeNull();
+    expect(q("chat-pickup-status")).toBeNull();
+    const btn = q("chat-tandem-claude-resume-remedy") as HTMLButtonElement;
+    expect(btn.textContent?.trim()).toBe(AI_CTA["sign-in"].label);
+    btn.click();
+    expect(onResumeRemedy).toHaveBeenCalledWith("sign-in");
   });
 });

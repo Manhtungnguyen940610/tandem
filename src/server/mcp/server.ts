@@ -59,6 +59,7 @@ import {
   countDistinctClients,
   createMcpSessionRegistry,
   hasLiveEntryFor,
+  hasLiveEntryOtherThan,
   isLiveEntry,
   type McpSessionEntry,
   type McpSessionRegistry,
@@ -598,6 +599,13 @@ export function hasAnyMcpSession(): boolean {
  * a test can reach it against a real registry. */
 export function isClaudeSessionAttached(claudeSessionId: string, sinceMs: number): boolean {
   return sessions ? hasLiveEntryFor(sessions.list(), claudeSessionId, sinceMs) : false;
+}
+
+/** Whether an MCP client other than the Claude sessions `ownClaudeSessionIds`
+ * is live — the launcher supervisor's `otherAiAttached` (#2196), wired in
+ * `index.ts`. See `hasLiveEntryOtherThan`. */
+export function isOtherMcpClientLive(ownClaudeSessionIds: ReadonlySet<string>): boolean {
+  return sessions ? hasLiveEntryOtherThan(sessions.list(), ownClaudeSessionIds, Date.now()) : false;
 }
 
 /**

@@ -122,7 +122,9 @@ instead. (`launcher/status`'s loopback-only fields include `busy`, whether Tande
 Claude has a turn in flight, and `attached`, whether its own MCP connection is live — activity
 and presence traces of the person at the machine, scrubbed for the same reason as `/health`'s
 `delivery` and `sessionCount`. `standby` (#2195) is the same class and weaker than `busy`: an `idle`
-standby says no turn ran for the configured time. `GET /api/launcher/settings` refuses a
+standby says no turn ran for the configured time. `startsOnMessage` (#2196) says, beside a standby,
+whether another AI session is attached — the same presence fact `/health`'s loopback-only
+`sessionCount` already gives. `GET /api/launcher/settings` refuses a
 non-loopback caller by hand and has no origin gate: a browser sends no `Origin` on a same-origin
 GET (measured against Chromium, 2026-10-13), so the gate would refuse the npm build's own editor,
 and the read has no side effect for it to protect. For the same reason `GET /api/launcher/nonce`
@@ -136,7 +138,11 @@ the client's GET and its POST. Before this, every launcher action in the npm bui
 `Origin` to check on these two GETs, DNS rebinding against them rests on the `Host` check
 (`isHostAllowed` in `createApiMiddleware`) alone; nothing a rebinding page could read or rotate here
 reaches a launcher action, whose POSTs still need an allowlisted `Origin` and the nonce. `startMode: "off"`
-is a preference, not a control: `TANDEM_DISABLE_LAUNCHER=1` is the kill switch. `attached` is computed server-side from the launched session's
+is a preference, not a control: `TANDEM_DISABLE_LAUNCHER=1` is the kill switch. Since #2196 a chat
+message, or a user's reply on a Claude-authored thread, starts Tandem's Claude from Off too (and saves the
+mode as `on-click`, as a Start does) unless another AI session is attached; anyone who can write those
+already holds the nonce that starts it, so this widens no reach, but it does mean Off is "not until I talk
+to it", not "never". `attached` is computed server-side from the launched session's
 UUID, which never crosses the wire.) That scrubbing is what the LAN Host accommodation (`createApiMiddleware`'s
 `extraHosts`, wired from `resolvedLanIP`) exists for, and it is now exactly scoped: LAN
 hosts may **read** `/api`; their writes are refused.
