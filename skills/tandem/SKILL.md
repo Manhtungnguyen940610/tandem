@@ -60,9 +60,9 @@ Choose the right type for each finding:
 
 **Accepting your own work is the user's decision, never yours.** `tandem_resolveAnnotation({ action: "accept" })` on your own annotation returns `ACCEPT_REFUSED`, as does accepting anything carrying `suggestedText` (an MCP accept flips a status and applies no text — only the user's accept in the editor writes the replacement). Accept on a user-authored comment with no `suggestedText` is permitted — but it records a decision on the user's own card, so do it only when they asked you to. What you *may* always do is **withdraw**: `action: "dismiss"` on your own annotation is how you take back a finding you no longer stand behind. Say so in chat when you do. A record you resolved is stamped `resolvedBy: "claude"` and is deliberately kept out of `userResponses`, so you will never read your own withdrawal back as the user agreeing with you.
 
-**Note annotations** (`type: "note"`) are user-personal — `tandem_checkInbox` does not surface them to you. Don't act on notes unless the user explicitly mentions one in chat. Highlights are also user-only; there is no tool for creating one.
+**Note annotations** (`type: "note"`) are user-personal — `tandem_checkInbox` does not surface them to you. Don't act on notes unless the user explicitly mentions one in chat. The user's highlights are theirs too; there is no tool for creating a highlight.
 
-**User comments.** When scanning `tandem_checkInbox` or `tandem_getAnnotations`, user-authored `type: "comment"` annotations are the ones you should respond to, in chat or with a comment of your own (see above). `tandem_annotationReply` is for continuing *your own* threads — it keeps the reply on the thread rather than only in chat — and besides a user-authored parent it also refuses a resolved, note (ADR-027), highlight or private (non-outbound) one; fall back to `tandem_reply` for those. A reply may also carry `suggestedText`: a refined replacement proposed over the **parent's** range — the user accepts it in the editor, and doing so supersedes the parent's original proposal.
+**User comments.** When scanning `tandem_checkInbox` or `tandem_getAnnotations`, user-authored `type: "comment"` annotations are the ones you should respond to, in chat or with a comment of your own (see above). `tandem_annotationReply` is for continuing *your own* threads — it keeps the reply on the thread rather than only in chat — and besides any parent you did not write it also refuses a resolved, note (ADR-027), highlight or private (non-outbound) one; fall back to `tandem_reply` for those. A reply may also carry `suggestedText`: a refined replacement proposed over the **parent's** range — the user accepts it in the editor, and doing so supersedes the parent's original proposal.
 
 **Before responding, check whether you already did.** None of `tandem_reply`, `tandem_comment`, or `tandem_annotationReply` is idempotent — sending the same answer twice leaves two chat bubbles or two annotation cards saying the same thing, which the user sees. A chat acknowledgement followed by the result (see Collaboration Etiquette) is the expected pair, not a duplicate. Your own memory of the conversation is the primary check: if you recognize the comment's text, you have probably already answered it.
 
@@ -150,7 +150,7 @@ If `ws` is unavailable, the equivalent stream is `GET /api/events?filter=wake` o
 Then pick an ending, and say which one you're doing:
 
 - **Leave it to the user.** Annotations stay in the session and never reach the file.
-- **`tandem_save`** — writes your edits back to the file now (`.md` and `.txt` documents also auto-save periodically). On a read-only document it answers `saved: false` with a `reason` instead.
+- **`tandem_save`** — writes your edits back to the file now (an open `.md` or `.txt` file you can edit also auto-saves periodically). On a read-only document it answers `saved: false` with a `reason` instead.
 
 Tandem snapshots the file's bytes before its first write each run, so a save is reversible: `tandem_restoreBackup` with no `backup` lists snapshots, and with `backup` set restores one in place (annotations preserved and re-anchored). If something else changed the file on disk meanwhile, the save is refused and a conflict banner asks the user to keep or reload — `tandem_save` reports that instead of claiming a save that didn't happen.
 
@@ -211,7 +211,8 @@ enable and no MCP setting to hand-edit.
 listing will surface a server that never connected; it only adds latency before the user hears
 anything. One check is enough, and the answer is conclusive.
 
-Through Tandem's stdio bridge, a lost Tandem reports as `-32000`: treat it as step 2. A licence
+When Tandem is reached through its stdio bridge (the Tandem plugin connects this way), a `-32000`
+error means the bridge lost Tandem or a request through it failed: treat it as step 2. A licence
 refusal stays `-32003`.
 
 ## Error Recovery

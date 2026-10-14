@@ -484,6 +484,8 @@ describe("shipped Tandem skill instruction contract", () => {
     expect(rules).toMatch(
       /force: true[\s\S]{0,250}(?:ask the user|the user resolves)|(?:ask the user|the user resolves)[\s\S]{0,250}force: true/i,
     );
+    // Since #1813 a forced open keeps notes; the old reason must not come back.
+    expect(rules).not.toMatch(/wiping the whole document's annotations/i);
 
     // Rule 2 addendum: textSnapshotTruncated.
     expect(rules).toContain("textSnapshotTruncated");
@@ -533,7 +535,7 @@ describe("shipped Tandem skill instruction contract", () => {
       "skills/tandem/SKILL.md changed. Bump its frontmatter `version:` AND update BOTH " +
         "literals here in the same commit — the installed copy only refreshes when the " +
         "bundled version is newer, so a body edit at an unchanged version never ships.",
-    ).toEqual({ version: "35", bodyHash: "4ab41325cacc" });
+    ).toEqual({ version: "35", bodyHash: "6025a42b3b4d" });
   });
 
   // #1521: what the model sees of a licence refusal is the code and message at the handshake
