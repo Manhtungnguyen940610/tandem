@@ -2690,6 +2690,90 @@ describe("#2197 — startAfterSetup: a wizard Apply starts Tandem's Claude when 
   });
 });
 
+describe("#2198 — the v1.0 walkthrough holds the boot start", () => {
+  const settings = (startMode: string) => ({ startMode, lifetime: "always", idleMinutes: 30 });
+
+  it("automatic, walkthrough owed: the boot waits in awaiting-start, and the confirm starts it", async () => {
+    writeLauncherSettingsFile(settings("auto"));
+    const { sup } = makeSupervisor({ walkthroughPending: () => true });
+    await sup.start();
+    await sleep(30);
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toMatchObject({ running: false, standby: "awaiting-start" });
+    expect(await sup.startAfterSetup()).toBe("starting");
+    await nthChild(1);
+  });
+
+  it("control: nothing owed, the automatic boot starts as before", async () => {
+    writeLauncherSettingsFile(settings("auto"));
+    const { sup } = makeSupervisor({ walkthroughPending: () => false });
+    await sup.start();
+    await nthChild(1);
+  });
+
+  it("a read that throws does not hold the boot", async () => {
+    writeLauncherSettingsFile(settings("auto"));
+    const { sup } = makeSupervisor({
+      walkthroughPending: () => {
+        throw new Error("EACCES");
+      },
+    });
+    await sup.start();
+    await nthChild(1);
+  });
+
+  it("on-click kept through the walkthrough: the confirm starts nothing", async () => {
+    writeLauncherSettingsFile(settings("on-click"));
+    const { sup } = makeSupervisor({ walkthroughPending: () => true });
+    await sup.start();
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it.each(["on-click", "off"])(
+    "%s at boot, automatic chosen in the walkthrough: the confirm starts it",
+    async (mode) => {
+      writeLauncherSettingsFile(settings(mode));
+      const { sup } = makeSupervisor({ walkthroughPending: () => true });
+      await sup.start();
+      await sup.updateSettings({ startMode: "auto" });
+      expect(await sup.startAfterSetup()).toBe("starting");
+      await nthChild(1);
+    },
+  );
+
+  it("control: the same mode change with no walkthrough owed stays a #2195 hold", async () => {
+    writeLauncherSettingsFile(settings("on-click"));
+    const { sup } = makeSupervisor({ walkthroughPending: () => false });
+    await sup.start();
+    await sup.updateSettings({ startMode: "auto" });
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("the hold is released once: a later Apply follows the ordinary rules", async () => {
+    writeLauncherSettingsFile(settings("on-click"));
+    const { sup } = makeSupervisor({ walkthroughPending: () => true });
+    await sup.start();
+    expect(await sup.startAfterSetup()).toBe("held"); // the confirm, on-click kept
+    await sup.updateSettings({ startMode: "auto" });
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("a chat during the walkthrough still starts Claude: the user asked (#2196)", async () => {
+    writeLauncherSettingsFile(settings("auto"));
+    const { sup, emit } = makeSupervisor({ walkthroughPending: () => true });
+    await sup.start();
+    expect(sup.status()).toMatchObject({ standby: "awaiting-start", startsOnMessage: true });
+    emit(chatEvent());
+    await nthChild(1);
+  });
+});
+
 describe("#2197 — the one-time greeting", () => {
   function greetingSeam(owed = true) {
     const state = { owed, throws: false };

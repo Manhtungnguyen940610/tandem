@@ -14,6 +14,9 @@ import { API_BASE } from "../utils/fileUpload";
 export interface FirstRunNeededState {
   /** `true` when the server says the wizard should auto-open. `null` while loading. */
   readonly needed: boolean | null;
+  /** The v1.0 walkthrough is owed (#2198): closing does not dismiss it for
+   * the version. False on every failure, and from an older server. */
+  readonly walkthrough: boolean;
   /** Server version (from package.json) — wizard dismissal is keyed on this. */
   readonly serverVersion: string | null;
   /** Per-session nonce — apply endpoint requires this in its body. */
@@ -37,6 +40,7 @@ export interface FirstRunNeededState {
  */
 export function createFirstRunNeeded(): FirstRunNeededState {
   let needed = $state<boolean | null>(null);
+  let walkthrough = $state(false);
   let serverVersion = $state<string | null>(null);
   let confirmationNonce = $state<string | null>(null);
   let settled = $state(false);
@@ -59,6 +63,7 @@ export function createFirstRunNeeded(): FirstRunNeededState {
         // user can still manually open via Settings → Reopen wizard.
         if (captured !== gen) return false;
         needed = false;
+        walkthrough = false;
         // Reset serverVersion + nonce: "set only when the latest fetch
         // succeeded" is a clearer invariant than "kept from prior success"
         // — downstream consumers (App.svelte's `closeIntegrationWizard`)
@@ -71,6 +76,7 @@ export function createFirstRunNeeded(): FirstRunNeededState {
       const body = (await res.json()) as Partial<FirstRunNeededResponse>;
       if (captured !== gen) return false;
       needed = body.needed === true;
+      walkthrough = body.walkthrough === true;
       serverVersion = typeof body.serverVersion === "string" ? body.serverVersion : null;
       confirmationNonce =
         typeof body.confirmationNonce === "string" ? body.confirmationNonce : null;
@@ -85,6 +91,7 @@ export function createFirstRunNeeded(): FirstRunNeededState {
       // by flipping the default.
       if (captured !== gen) return false;
       needed = false;
+      walkthrough = false;
       serverVersion = null;
       confirmationNonce = null;
       settled = true;
@@ -97,6 +104,9 @@ export function createFirstRunNeeded(): FirstRunNeededState {
   return {
     get needed() {
       return needed;
+    },
+    get walkthrough() {
+      return walkthrough;
     },
     get serverVersion() {
       return serverVersion;

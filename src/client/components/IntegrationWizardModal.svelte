@@ -48,7 +48,7 @@ import { createSubnetPreflight } from "../hooks/useCoworkPreflight.svelte.js";
 import { createCoworkStatus } from "../hooks/useCoworkStatus.svelte.js";
 import {
   createIntegrationWizard,
-  detectedToPicked,
+  isSelectable,
   type PickedIntegration,
 } from "../hooks/useIntegrationWizard.svelte.js";
 import {
@@ -68,6 +68,7 @@ import {
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
 import PushRoutesInfo from "./PushRoutesInfo.svelte";
+import SettingsTandemClaudeSection from "./settings-tabs/SettingsTandemClaudeSection.svelte";
 
 interface Props {
   open: boolean;
@@ -86,9 +87,26 @@ interface Props {
    * without it shows the apply's answer alone.
    */
   tandemClaudeLive?: TandemClaudeLive | null;
+  /**
+   * The server version the v1.0 walkthrough is owed on (#2198), or null when
+   * none is. While set, the wizard offers **Keep this setup** (or "Continue
+   * without connecting" when nothing is set up), shows the start choice, and
+   * tells the user it comes back until they keep or connect.
+   */
+  walkthroughVersion?: string | null;
+  /** Keep succeeded: the walkthrough is done (App also stops the first-run
+   * rule from reopening the wizard). Called before the wizard closes. */
+  onWalkthroughKept?: () => void;
 }
 
-let { open, onClose, onSetupModels, tandemClaudeLive = null }: Props = $props();
+let {
+  open,
+  onClose,
+  onSetupModels,
+  tandemClaudeLive = null,
+  walkthroughVersion = null,
+  onWalkthroughKept,
+}: Props = $props();
 
 // Absolute base URL because the Vite dev server does not proxy /api/* —
 // other client modules (yjsSync, useNotifications, fileUpload) follow the
@@ -501,7 +519,9 @@ function togglePicked(install: ExistingMcpInstall): void {
     wizard.setPicked(wizard.picked.filter((_, i) => i !== existingIdx));
     return;
   }
-  const next = detectedToPicked(install);
+  // From its saved record when it has one (#2198): re-checking a card must not
+  // mint a fresh id and drop the record's token, cwd and the rest.
+  const next = wizard.pickedForInstall(install);
   if (next) wizard.setPicked([...wizard.picked, next]);
 }
 
@@ -523,6 +543,34 @@ const NETWORK_ERROR_RE = /fetch|network|Failed to/i;
 const connectLabel = $derived(
   wizard.picked.length === 1 ? `Connect ${wizard.picked[0].config.label}` : "Connect selected",
 );
+
+// --- The v1.0 walkthrough (#2198) -------------------------------------------
+const walkthrough = $derived(walkthroughVersion !== null);
+/** The start choice is about Tandem's Claude, which only Claude Code runs. */
+const hasClaudeCodeInstall = $derived(wizard.existing.some((i) => i.target.kind === "claude-code"));
+/** "Keep" keeps something; with nothing set up it is "Continue without
+ * connecting" (Bryan, 2026-10-14) — and then Connect stays the primary action
+ * whenever something connectable was found. */
+const keepLabel = $derived(
+  wizard.hasSetupToKeep ? "Keep this setup" : "Continue without connecting",
+);
+const keepIsPrimary = $derived(
+  wizard.hasSetupToKeep || !wizard.existing.some((i) => isSelectable(i)),
+);
+/** A start-mode save in flight: Connect and Keep both ask the launcher to
+ * start under the saved mode, so they wait for it. */
+let startModeBusy = $state(false);
+let keeping = $state(false);
+
+async function keepSetup(): Promise<void> {
+  if (walkthroughVersion === null || keeping) return;
+  keeping = true;
+  const ok = await wizard.keepSetup(walkthroughVersion);
+  keeping = false;
+  if (!ok) return;
+  onWalkthroughKept?.();
+  close();
+}
 
 /** Friendly name for an apply-result row — results carry integration ids,
  *  so resolve back through `picked` for the human label. */
@@ -593,6 +641,18 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
   return pushSupportNote(wizard.picked.find((p) => p.id === id)?.config.kind);
 }
 </script>
+
+{#snippet keepButton(primary: boolean)}
+  <button
+    type="button"
+    class="iw-btn {primary ? 'iw-btn-primary' : 'iw-btn-secondary'}"
+    onclick={keepSetup}
+    disabled={keeping || startModeBusy}
+    data-testid="integration-wizard-keep-setup"
+  >
+    {keeping ? "Saving…" : keepLabel}
+  </button>
+{/snippet}
 
 {#snippet warningIcon(cls?: string)}
   <svg
@@ -732,7 +792,11 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
           <h2 class="iw-title">
             {view === "cowork" ? "Set up Cowork" : "Connect Claude to Tandem"}
           </h2>
-          {#if view === "main" && wizard.step === "connect"}
+          {#if view === "main" && wizard.step === "connect" && walkthrough}
+            <p class="iw-subtitle" data-testid="integration-wizard-walkthrough-intro">
+              Tandem 1.0: check how Tandem connects to your AI, then keep it or change it.
+            </p>
+          {:else if view === "main" && wizard.step === "connect"}
             <p class="iw-subtitle">Connect your AI assistant.</p>
           {:else if view === "cowork"}
             <p class="iw-subtitle">Let a teammate's Claude join from the Cowork VM.</p>
@@ -1028,11 +1092,29 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <!-- First-run dismissal is persisted per server version, so the
                  wizard never auto-reopens. Tell the user where the way back is
                  before they close it (#1022). -->
+            {#if walkthrough && hasClaudeCodeInstall && !wizard.detecting}
+              <div class="iw-start-mode" data-testid="integration-wizard-start-mode">
+                <SettingsTandemClaudeSection
+                  startModeOnly
+                  onBusyChange={(busy) => (startModeBusy = busy)}
+                />
+              </div>
+            {/if}
+            {#if wizard.keepError}
+              <p role="alert" class="iw-keep-error" data-testid="integration-wizard-keep-error">
+                {wizard.keepError}
+              </p>
+            {/if}
             <p
               class="iw-hint-text iw-reopen-hint"
               data-testid="integration-wizard-reopen-hint"
             >
-              Not now? You can reopen this wizard anytime from Settings → AI Assistant.
+              {#if walkthrough}
+                This opens again the next time you start Tandem, until you keep your setup or
+                connect.
+              {:else}
+                Not now? You can reopen this wizard anytime from Settings → AI Assistant.
+              {/if}
             </p>
           </section>
         {:else if wizard.step === "applying"}
@@ -1369,6 +1451,9 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Cancel</button>
           {:else if wizard.existing.length === 0}
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Close</button>
+            {#if walkthrough}
+              {@render keepButton(false)}
+            {/if}
             <button
               type="button"
               class="iw-btn iw-btn-primary"
@@ -1381,11 +1466,14 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
             <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>
               Not now
             </button>
+            {#if walkthrough}
+              {@render keepButton(keepIsPrimary)}
+            {/if}
             <button
               type="button"
-              class="iw-btn iw-btn-primary"
+              class="iw-btn {walkthrough && keepIsPrimary ? 'iw-btn-secondary' : 'iw-btn-primary'}"
               onclick={() => wizard.save()}
-              disabled={wizard.picked.length === 0}
+              disabled={wizard.picked.length === 0 || startModeBusy || keeping}
               data-testid="integration-wizard-connect-btn"
             >
               {connectLabel}
@@ -1395,6 +1483,12 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
           <button type="button" class="iw-btn iw-btn-secondary" disabled>Connecting…</button>
         {:else if wizard.step === "done"}
           {#if anyApplyErrors}
+            <!-- A target that keeps failing must not trap the user in the
+                 walkthrough every launch: Keep writes nothing, so it is safe
+                 whatever the apply did (#2198). -->
+            {#if walkthrough}
+              {@render keepButton(false)}
+            {/if}
             <button
               type="button"
               class="iw-btn iw-btn-secondary"
@@ -1414,6 +1508,9 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
           </button>
         {:else if wizard.step === "error"}
           <button type="button" class="iw-btn iw-btn-secondary" onclick={close}>Close</button>
+          {#if walkthrough}
+            {@render keepButton(false)}
+          {/if}
           <button
             type="button"
             class="iw-btn iw-btn-primary"
@@ -1687,6 +1784,16 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
 
   /* The parent .iw-step flex gap provides the spacing; only the tone differs
      from a regular hint (it's an aside, not step guidance). */
+  .iw-start-mode {
+    margin-top: var(--tandem-space-3);
+  }
+
+  .iw-keep-error {
+    margin: var(--tandem-space-2) 0 0;
+    color: var(--tandem-error-fg);
+    font-size: var(--tandem-text-sm);
+  }
+
   .iw-reopen-hint {
     color: var(--tandem-fg-subtle);
   }

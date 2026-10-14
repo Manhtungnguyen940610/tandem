@@ -230,6 +230,16 @@ interface SupervisorOpts {
    * `readModeState`. The default is "never Solo"; a throw reads as Solo.
    */
   greetingHeldBySolo?: () => boolean;
+  /**
+   * The v1.0 setup walkthrough is owed (#2198; `integrations/walkthrough.ts`).
+   * Read once, at `start()`: while it is, the boot does not start Tandem's
+   * Claude even in the automatic mode (Bryan, 2026-10-14 — the walkthrough is
+   * how the user meets the start choice, so it must not be inferred first).
+   * The boot holds in `awaiting-start` instead, and the walkthrough's Keep or
+   * Apply (`startAfterSetup`) releases it under the mode the user then has.
+   * Synchronous; a throw reads as not owed. Default: never owed.
+   */
+  walkthroughPending?: () => boolean;
   /** Override for `GREETING_REPLY_WINDOW_MS`, for tests. */
   greetingWindowMs?: number;
 }
@@ -1123,6 +1133,11 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * `start()`. While up, no message starts Claude, whatever lands on the lock
    * after it — including an Off that re-arms the standby watch (#2196). */
   let shuttingDown = false;
+  /** The boot found the v1.0 walkthrough owed (#2198), whatever the start
+   * mode: an `awaiting-start` standby is then the walkthrough's to release, if
+   * the mode is automatic by the time the user confirms. Cleared by the first
+   * `startAfterSetup`, which is the confirm (Keep or Apply). */
+  let walkthroughHold = false;
 
   /**
    * The one-time greeting in this process (#2197), or null before one is
@@ -1162,6 +1177,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     unsubscribeTandemReply();
     spendGreeting();
   });
+
+  /** `opts.walkthroughPending`, read at boot; a throw reads as not owed. */
+  function walkthroughOwedAtBoot(): boolean {
+    try {
+      return opts.walkthroughPending?.() === true;
+    } catch {
+      return false;
+    }
+  }
 
   /** Case-folded, as the MCP registry compares Claude session ids: a UUID
    * may round-trip through the session file in either case. */
@@ -2709,6 +2733,19 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       } finally {
         launching--;
       }
+      walkthroughHold = walkthroughOwedAtBoot();
+      if (settings.startMode === "auto" && walkthroughHold) {
+        // The walkthrough hold (#2198): the same standby on-click boots into,
+        // so a message sent meanwhile still starts Claude (#2196) and Start is
+        // one click away; the walkthrough's confirm is what releases it.
+        holdInStandby("awaiting-start");
+        armGapWatch();
+        console.error(
+          "[Launcher] The v1.0 setup walkthrough is pending — Tandem's Claude waits for it",
+        );
+        await buildPlan();
+        return;
+      }
       if (settings.startMode !== "auto") {
         // The boot hold (#2195). The standby is set BEFORE the plan read, so
         // no poll lands on a plain stopped launcher in between; the plan still
@@ -3103,15 +3140,28 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       decide = resolve;
     });
     withLock(async () => {
+      // This is the walkthrough's confirm, if one was owed: the hold is
+      // released (or kept, below) exactly once.
+      const heldForWalkthrough = walkthroughHold;
+      walkthroughHold = false;
       const plan = await buildPlan();
       if (!plan) return decide("not-configured");
-      // Shutdown, or the user's own Off: an Apply is not a Start.
-      if (shuttingDown || userStopped) return decide("held");
+      if (shuttingDown) return decide("held");
       if (isAlive() || restartPending()) return decide("running");
       const settings = await readSettingsNow();
-      // On-click holds boot (#2195), and a first Apply is boot for a Claude
-      // that has never run; idle-stopped is a choice too.
-      if (settings.startMode !== "auto" || standby !== undefined) return decide("held");
+      // The walkthrough's own hold (#2198) is released when the user confirms
+      // with the mode automatic — including a mode they just chose in the
+      // walkthrough, which is the point of showing it there, and an Off they
+      // then reversed. Any other standby, or another mode, holds.
+      const releasesWalkthrough =
+        heldForWalkthrough && standby === "awaiting-start" && settings.startMode === "auto";
+      if (!releasesWalkthrough) {
+        // The user's own Off: an Apply is not a Start.
+        if (userStopped) return decide("held");
+        // On-click holds boot (#2195), and a first Apply is boot for a Claude
+        // that has never run; idle-stopped is a choice too.
+        if (settings.startMode !== "auto" || standby !== undefined) return decide("held");
+      }
       // A tripped breaker (a crash loop, a sign-in stop) or a stop that could
       // not be confirmed (its child may still be alive) is a diagnosis for the
       // user to act on: an Apply does not clear it the way their Start does.

@@ -151,6 +151,11 @@ const ROUTE_GATES: RouteGate[] = [
     why: "AI-client connection config; an unlicensed user may still set it up for after activation",
   },
   {
+    constant: "API_INTEGRATIONS_WALKTHROUGH_CONFIRM",
+    gate: "open",
+    why: "the v1.0 walkthrough's Keep (#2198): writes Tandem's own app data and starts nothing itself — the release it asks of the supervisor refuses there (startAfterSetup consults aiRefusal) — so refusing here would trap an unlicensed user in the wizard every launch",
+  },
+  {
     constant: "API_INTEGRATIONS_APPLY",
     gate: "open",
     why: "writes MCP config, not documents; a claude-code apply then asks the supervisor to start Tandem's Claude (#2197), which the supervisor refuses itself (startAfterSetup and respawn both consult aiRefusal), so refusing here would only block the user's own setup",

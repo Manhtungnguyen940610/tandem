@@ -114,3 +114,46 @@ describe("App greeting and done-screen wiring (#2197)", () => {
     expect(tag).toMatch(/standby: aiReadiness\.launcherStandby,/);
   });
 });
+
+describe("App v1.0 walkthrough wiring (#2198)", () => {
+  /** A function body, from its declaration to the next top-level `}`. */
+  function fn(name: string): string {
+    const start = APP.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThan(-1);
+    return APP.slice(start, APP.indexOf("\n}\n", start));
+  }
+
+  it("auto-open goes through resolveWizardAutoOpen, fed the walkthrough and the session flag", () => {
+    const d = APP.slice(APP.indexOf("const isAutoOpenFirstRun = $derived("));
+    const body = d.slice(0, d.indexOf("}),\n);"));
+    expect(body).toMatch(/resolveWizardAutoOpen\(\{/);
+    expect(body).toMatch(/walkthrough: firstRun\.walkthrough,/);
+    expect(body).toMatch(/closedThisSession: wizardClosedThisSession,/);
+    expect(body).toMatch(/dismissedForVersion,/);
+  });
+
+  it("closing the walkthrough ends it for the session only, never for the version", () => {
+    const close = fn("closeIntegrationWizard");
+    expect(close).toMatch(
+      /if \(!firstRun\.walkthrough\) dismissForVersion\(firstRun\.serverVersion\);/,
+    );
+    expect(close).toMatch(/markClosedThisSession\(\);/);
+    // A successful Apply or Keep ended it on the server: re-read on close.
+    expect(close).toMatch(/void firstRun\.refetch\(\);/);
+  });
+
+  it("Keep also dismisses the first-run rule, and the wizard gets both walkthrough props", () => {
+    expect(fn("onWalkthroughKept")).toMatch(/dismissForVersion\(firstRun\.serverVersion\)/);
+    const mount = APP.slice(APP.indexOf("<IntegrationWizardModal"));
+    const props = mount.slice(0, mount.indexOf("/>"));
+    expect(props).toMatch(/\{walkthroughVersion\}/);
+    expect(props).toMatch(/\{onWalkthroughKept\}/);
+  });
+
+  it("the in-memory dismissal is set even when localStorage throws", () => {
+    const dismiss = fn("dismissForVersion");
+    expect(dismiss.indexOf("dismissedForVersion = version;")).toBeLessThan(
+      dismiss.indexOf("localStorage.setItem"),
+    );
+  });
+});

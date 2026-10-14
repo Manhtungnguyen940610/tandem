@@ -27,6 +27,7 @@ import { attachCtrlObservers } from "./events/queue.js";
 import { sweepDocBackups } from "./file-io/doc-backup.js";
 import { reapOrphanedTemps } from "./file-io/reaper.js";
 import { unwatchAll } from "./file-watcher.js";
+import { isWalkthroughPending } from "./integrations/walkthrough.js";
 import { armFirstRunGreeting, isGreetingOwed, markGreeted } from "./launcher/greeting.js";
 import { resolveInitialLauncherReason } from "./launcher/initial-reason.js";
 import {
@@ -168,6 +169,9 @@ async function startLauncherSupervisor(): Promise<void> {
       subscribeTandemReply: onTandemReply,
       // Solo, or an unreadable mode, holds the hello for a Tandem-mode start.
       greetingHeldBySolo: () => readModeState() !== "tandem",
+      // The v1.0 setup walkthrough holds the boot start until it is done
+      // (#2198; Bryan, 2026-10-14) — the same predicate the wizard opens on.
+      walkthroughPending: () => isWalkthroughPending(appData, APP_VERSION),
     });
     await launcherSupervisor.start();
   } catch (err) {

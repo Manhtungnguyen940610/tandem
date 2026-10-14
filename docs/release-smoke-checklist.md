@@ -121,6 +121,15 @@ before it meets a paying user.
       (Added 2026-06-11; once the updater authenticates against the
       license-checked endpoint — #1116 L3 — run this against the staging
       endpoint so the entitlement check is in the loop.)
+- [ ] **v1.0 setup walkthrough** (#2198; Windows + macOS): `isV1Release`
+      rejects an rc, so launch the RC with `TANDEM_FORCE_V1_WALKTHROUGH=1`
+      on a profile that has a working 0.x setup. Expect: the wizard opens
+      pre-filled; Tandem's Claude is held (Start shown, no hello yet); closing
+      it and relaunching brings it back; **Keep this setup** closes it and —
+      with "Start automatically" — starts Tandem's Claude, which then says
+      hello once; relaunching shows no wizard. Check `integrations.json`
+      still holds the working directory and token ref it had before.
+      Re-check on the 1.0.0 build itself without the variable.
 - [ ] **License gate ON** (#1116; Windows + macOS minimum): on a gate-enabled
       build — trial banner appears → simulate trial expiry (clock or test hook)
       → hard gate engages → activate with a **real signed license** (issued by

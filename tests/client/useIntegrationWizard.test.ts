@@ -28,6 +28,14 @@ function makeFetchStub(
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     const match = handlers.find((h) => h.method === method && h.urlMatch.test(url));
+    // The saved setup (#2198) is read with detection and again before a save;
+    // a test that does not care gets an empty file, as on a first run.
+    if (!match && method === "GET" && /\/api\/integrations$/.test(url)) {
+      return new Response(
+        JSON.stringify({ schemaVersion: INTEGRATIONS_SCHEMA_VERSION, integrations: [] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     if (!match) {
       return new Response(JSON.stringify({ error: "no-stub-match", url }), {
         status: 500,
@@ -106,7 +114,14 @@ describe("createIntegrationWizard", () => {
     });
     let call = 0;
     const wizard = createIntegrationWizard({
-      fetchFn: (async () => {
+      fetchFn: (async (input: RequestInfo | URL) => {
+        // begin() also reads the saved setup (#2198); gate on detection only.
+        if (!String(input).endsWith("/existing")) {
+          return new Response(
+            JSON.stringify({ schemaVersion: INTEGRATIONS_SCHEMA_VERSION, integrations: [] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
         call += 1;
         if (call === 1)
           await firstGate; // first begin() stalls
@@ -964,6 +979,13 @@ describe("createIntegrationWizard", () => {
             headers: { "content-type": "application/json" },
           });
         }
+        if (/\/api\/integrations$/.test(url) && (init?.method ?? "GET") === "GET") {
+          // The saved setup, re-read before the save (#2198): empty.
+          return new Response(
+            JSON.stringify({ schemaVersion: INTEGRATIONS_SCHEMA_VERSION, integrations: [] }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
         if (/\/api\/integrations$/.test(url)) {
           // Persist succeeds — the file is durably written referencing cc-1-abc.
           return new Response(
@@ -1077,5 +1099,204 @@ describe("createIntegrationWizard", () => {
     it.each(cases)("%s → %s", (_name, install, expected) => {
       expect(isSelectable(install)).toBe(expected);
     });
+  });
+});
+
+describe("createIntegrationWizard — the saved setup (#2198)", () => {
+  const savedRecord = {
+    kind: "claude-code" as const,
+    id: "cc-saved",
+    label: "Claude Code",
+    configPath: "/home/u/.claude.json",
+    transport: "http" as const,
+    url: "http://127.0.0.1:3479/mcp",
+    tokenSecretRef: "cc-saved-ref",
+    workingDirectory: "/home/u/projects/novel",
+    apply: "create" as const,
+  };
+  const otherMcp = {
+    kind: "other-mcp" as const,
+    id: "other-1",
+    label: "Something else",
+    transport: "http" as const,
+    url: "http://127.0.0.1:9000/mcp",
+    apply: "skip" as const,
+  };
+  const install = {
+    target: { kind: "claude-code", label: "Claude Code", configPath: "/home/u/.claude.json" },
+    status: "ok",
+    tandemEntry: { type: "http", url: "http://127.0.0.1:3479/mcp" },
+    tandemValidation: { status: "valid" },
+  };
+
+  /** A server holding `savedRecord` + `otherMcp`; records every request. */
+  function server(opts: { persistStatus?: number } = {}) {
+    const calls: Array<{ method: string; url: string; body: unknown }> = [];
+    const deletedRefs: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      const body = init?.body ? JSON.parse(init.body as string) : undefined;
+      calls.push({ method, url, body });
+      const json = (status: number, b: unknown) =>
+        new Response(JSON.stringify(b), {
+          status,
+          headers: { "content-type": "application/json" },
+        });
+      if (method === "DELETE") {
+        const m = url.match(/\/secrets\/([^/?]+)/);
+        if (m) deletedRefs.push(decodeURIComponent(m[1] ?? ""));
+        return json(200, { existed: true });
+      }
+      if (url.endsWith("/existing")) return json(200, { installs: [install] });
+      if (url.endsWith("/api/integrations") && method === "GET") {
+        return json(200, {
+          schemaVersion: INTEGRATIONS_SCHEMA_VERSION,
+          integrations: [otherMcp, savedRecord],
+          defaultIntegrationId: "cc-saved",
+        });
+      }
+      if (url.endsWith("/api/integrations") && method === "POST") {
+        if (opts.persistStatus && opts.persistStatus !== 200) {
+          return json(opts.persistStatus, { message: "nope" });
+        }
+        return json(200, { ok: true, ids: ["other-1", "cc-saved"], confirmationNonce: "n1" });
+      }
+      if (url.endsWith("/apply")) {
+        return json(200, {
+          results: [{ id: "cc-saved", status: "applied" }],
+          nextNonce: "n2",
+        });
+      }
+      if (url.endsWith("/secrets/new")) return json(200, { ok: true });
+      if (url.endsWith("/walkthrough-confirm")) {
+        return body && (body as { serverVersion?: string }).serverVersion === "1.0.0"
+          ? json(200, { ok: true })
+          : json(409, { message: "Tandem was updated since this window opened." });
+      }
+      return json(200, {});
+    }) as unknown as typeof fetch;
+    const keychainBackend = {
+      set: async () => ({ status: "ok" as const }),
+      delete: async (ref: string) => {
+        deletedRefs.push(ref);
+      },
+    } as never;
+    return { fetchFn, keychainBackend, calls, deletedRefs };
+  }
+
+  it("pre-fills the card from the saved record: its id, token and working directory", async () => {
+    const s = server();
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    await wizard.begin();
+    flushSync();
+    expect(wizard.picked).toHaveLength(1);
+    expect(wizard.picked[0]).toMatchObject({
+      id: "cc-saved",
+      fromRecord: true,
+      hasStoredSecret: true,
+      config: { tokenSecretRef: "cc-saved-ref", workingDirectory: "/home/u/projects/novel" },
+    });
+    expect(wizard.hasSetupToKeep).toBe(true);
+  });
+
+  it("closing (Keep, Not now, Esc) never deletes the saved token", async () => {
+    const s = server();
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    await wizard.begin();
+    await wizard.cleanupUnsavedSecrets();
+    expect(s.deletedRefs).toEqual([]);
+  });
+
+  it("unchecking the card never deletes the saved token, and re-checking rebuilds it from the record", async () => {
+    const s = server();
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    await wizard.begin();
+    wizard.setPicked([]);
+    expect(s.deletedRefs).toEqual([]);
+    const again = wizard.pickedForInstall(install as never);
+    expect(again).toMatchObject({ id: "cc-saved", config: { tokenSecretRef: "cc-saved-ref" } });
+  });
+
+  it("a failed persist cleans up only a token entered this session", async () => {
+    const s = server({ persistStatus: 500 });
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    await wizard.begin();
+    const card = wizard.picked[0];
+    if (!card) throw new Error("no card");
+    await wizard.submitSecret(card, "fresh-token");
+    flushSync();
+    const freshRef = wizard.picked[0]?.config.tokenSecretRef;
+    expect(freshRef).not.toBe("cc-saved-ref");
+    await wizard.save();
+    expect(s.deletedRefs).toEqual([freshRef]);
+  });
+
+  it("save keeps what it does not own and applies only the picked card", async () => {
+    const s = server();
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    await wizard.begin();
+    await wizard.save();
+    flushSync();
+    expect(wizard.step).toBe("done");
+    const persist = s.calls.find((c) => c.method === "POST" && c.url.endsWith("/api/integrations"));
+    expect(persist?.body).toMatchObject({
+      integrations: [otherMcp, { id: "cc-saved", workingDirectory: "/home/u/projects/novel" }],
+      defaultIntegrationId: "cc-saved",
+    });
+    const apply = s.calls.find((c) => c.url.endsWith("/apply"));
+    expect((apply?.body as { ids: string[] }).ids).toEqual(["cc-saved"]);
+    // The saved setup is re-read before the save, not reused from begin().
+    expect(
+      s.calls.filter((c) => c.method === "GET" && c.url.endsWith("/api/integrations")),
+    ).toHaveLength(2);
+  });
+
+  it("a saved setup that cannot be read stops the wizard rather than saving without it", async () => {
+    const wizard = createIntegrationWizard({
+      fetchFn: makeFetchStub([
+        {
+          method: "GET",
+          urlMatch: /\/api\/integrations\/existing$/,
+          handler: () => ({ status: 200, body: { installs: [install] } }),
+        },
+        {
+          method: "GET",
+          urlMatch: /\/api\/integrations$/,
+          handler: () => ({ status: 500, body: { message: "disk on fire" } }),
+        },
+      ]),
+    });
+    await wizard.begin();
+    flushSync();
+    expect(wizard.step).toBe("error");
+  });
+
+  it("Keep posts the version the walkthrough was shown for; a refusal is shown, not swallowed", async () => {
+    const s = server();
+    const wizard = createIntegrationWizard({
+      fetchFn: s.fetchFn,
+      keychainBackend: s.keychainBackend,
+    });
+    expect(await wizard.keepSetup("1.0.0")).toBe(true);
+    expect(s.calls.at(-1)).toMatchObject({ method: "POST", body: { serverVersion: "1.0.0" } });
+    expect(await wizard.keepSetup("0.9.0")).toBe(false);
+    flushSync();
+    expect(wizard.keepError).toMatch(/updated since this window opened/);
   });
 });

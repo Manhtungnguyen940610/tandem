@@ -158,6 +158,7 @@ import { openServerPath } from "./utils/server-paths";
 import { wireSidecarRestarted } from "./utils/sidecar-restart-toast";
 import { wireStartupRejection } from "./utils/startup-rejection";
 import { listenTauriEvent } from "./utils/tauri-event";
+import { resolveWizardAutoOpen } from "./utils/wizard-auto-open";
 
 // `getRetryStrategy` is read lazily inside yjsSync (only after bootstrap), so it
 // safely closes over `settingsState`, which is initialized further down.
@@ -808,7 +809,12 @@ $effect(() => {
 });
 
 const WIZARD_DISMISSED_KEY = "tandem:wizard-dismissed";
+/** This tab closed the auto-opened wizard (#2198): not again until the next
+ * launch. `sessionStorage`, so a reload of the browser tab does not bring it
+ * back; memory alone when storage is unavailable. */
+const WIZARD_CLOSED_SESSION_KEY = "tandem:wizard-closed-this-session";
 let dismissedForVersion = $state<string | null>(readDismissed());
+let wizardClosedThisSession = $state(readClosedThisSession());
 let manuallyReopened = $state(false);
 
 function readDismissed(): string | null {
@@ -816,6 +822,35 @@ function readDismissed(): string | null {
     return localStorage.getItem(WIZARD_DISMISSED_KEY);
   } catch {
     return null;
+  }
+}
+
+function readClosedThisSession(): boolean {
+  try {
+    return sessionStorage.getItem(WIZARD_CLOSED_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markClosedThisSession(): void {
+  wizardClosedThisSession = true;
+  try {
+    sessionStorage.setItem(WIZARD_CLOSED_SESSION_KEY, "1");
+  } catch {
+    // Storage unavailable — memory alone holds it for this page.
+  }
+}
+
+/** Dismiss the first-run rule for this server version — in memory even when
+ * localStorage throws, so a storage-disabled browser is not re-prompted at
+ * once (#2198 review). */
+function dismissForVersion(version: string): void {
+  dismissedForVersion = version;
+  try {
+    localStorage.setItem(WIZARD_DISMISSED_KEY, version);
+  } catch {
+    // localStorage unavailable — the server-side check re-prompts on next launch.
   }
 }
 
@@ -827,11 +862,20 @@ function readDismissed(): string | null {
 // in client localStorage, or Cowork state, which lives behind Tauri). The
 // unified wizard surfaces models + Cowork client-side under "More
 // integrations" — do NOT try to make `needed` "smart" about them.
+//
+// The v1.0 walkthrough (#2198) ignores the per-version dismissal — closing it
+// brings it back next launch — see `resolveWizardAutoOpen`.
 const isAutoOpenFirstRun = $derived(
-  firstRun.needed === true &&
-    firstRun.serverVersion !== null &&
-    dismissedForVersion !== firstRun.serverVersion,
+  resolveWizardAutoOpen({
+    needed: firstRun.needed,
+    walkthrough: firstRun.walkthrough,
+    serverVersion: firstRun.serverVersion,
+    dismissedForVersion,
+    closedThisSession: wizardClosedThisSession,
+  }),
 );
+/** The version the walkthrough is owed on, for the wizard's Keep. */
+const walkthroughVersion = $derived(firstRun.walkthrough ? firstRun.serverVersion : null);
 const shouldShowWizard = $derived(manuallyReopened || isAutoOpenFirstRun);
 
 // #1713: `manuallyReopened`'s own trigger already clears settingsModalOpen in
@@ -848,15 +892,24 @@ function closeIntegrationWizard(): void {
   // Only persist dismissal when this close ends an auto-open session.
   // A manual reopen → close where the server says `needed === false`
   // would otherwise burn the dismissal slot for `serverVersion`.
+  //
+  // The walkthrough (#2198) is NOT dismissed for the version: only Keep or a
+  // successful Apply ends it, on the server. Closing it ends it for this
+  // session alone.
   if (isAutoOpenFirstRun && firstRun.serverVersion !== null) {
-    try {
-      localStorage.setItem(WIZARD_DISMISSED_KEY, firstRun.serverVersion);
-      dismissedForVersion = firstRun.serverVersion;
-    } catch {
-      // localStorage unavailable — the server-side check re-prompts on next launch.
-    }
+    if (!firstRun.walkthrough) dismissForVersion(firstRun.serverVersion);
+    markClosedThisSession();
   }
   manuallyReopened = false;
+  // Re-read: a successful Apply or Keep has just ended the walkthrough on the
+  // server, and a later Settings → Reopen must not show its copy again.
+  void firstRun.refetch();
+}
+
+/** Keep this setup succeeded (#2198). Also dismiss the first-run rule, or a
+ * user with nothing set up would match it on the next launch. */
+function onWalkthroughKept(): void {
+  if (firstRun.serverVersion !== null) dismissForVersion(firstRun.serverVersion);
 }
 
 // Sync dismissal state across tabs: if one tab dismisses (writes to
@@ -2842,6 +2895,8 @@ const shouldShowModelPicker = $derived(
           remedy: aiReadiness.launcherRemedy,
           standby: aiReadiness.launcherStandby,
         }}
+        {walkthroughVersion}
+        {onWalkthroughKept}
       />
     {/if}
 

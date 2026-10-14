@@ -32,6 +32,7 @@ import { registerIntegrationsRoutes } from "../integrations/api-routes.js";
 import { readExistingTandemEntries } from "../integrations/existing-config.js";
 import { createKeychain, KEYCHAIN_SERVICE_MODELS } from "../integrations/keychain.js";
 import { createIntegrationsStore } from "../integrations/storage.js";
+import { isWalkthroughPending, markWalkthroughConfirmed } from "../integrations/walkthrough.js";
 import { type AiRefusal, aiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import { registerModelsRoutes } from "../models/api-routes.js";
 import { resolveAppDataDir, SESSION_DIR } from "../platform.js";
@@ -1120,6 +1121,13 @@ export async function startMcpServerHttp(
     // `undefined` → "unknown": the boot start reads the new entry itself.
     // `startAfterSetup` never rejects, and the route guards it anyway (#2125).
     onClaudeCodeApplied: launcher ? () => launcher.getSupervisor()?.startAfterSetup() : undefined,
+    // The v1.0 walkthrough marker (#2198): the first-run GET reads it, Keep
+    // and a successful Apply write it. The supervisor's boot hold reads the
+    // same predicate (wired in index.ts).
+    walkthrough: {
+      isPending: () => isWalkthroughPending(resolveAppDataDir(), APP_VERSION),
+      markConfirmed: (via) => markWalkthroughConfirmed(resolveAppDataDir(), APP_VERSION, via),
+    },
   });
 
   // --- Auto-launcher endpoints (#477 PR 4b) ---

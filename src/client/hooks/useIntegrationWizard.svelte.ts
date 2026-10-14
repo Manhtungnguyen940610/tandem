@@ -32,10 +32,10 @@ import {
   API_INTEGRATIONS,
   API_INTEGRATIONS_APPLY,
   API_INTEGRATIONS_EXISTING,
+  API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
   type ApplyItemResult,
   type ApplyResponse,
   type ExistingMcpInstall,
-  INTEGRATIONS_SCHEMA_VERSION,
   type IntegrationConfig,
   type IntegrationsFile,
 } from "../../shared/integrations/contract.js";
@@ -49,8 +49,18 @@ import {
 } from "../keychain/keychain-backend.js";
 import { MCP_BASE_URL } from "../utils/backend-ports.js";
 import { responseErrorMessage } from "../utils/response-error.js";
+import {
+  buildSaveFile,
+  hasValidTandemEntry,
+  matchRecord,
+  preselects,
+  preselectsSelectively,
+  recordToConfig,
+} from "./integration-wizard-merge.js";
 
 export type WizardStep = "connect" | "applying" | "done" | "error";
+
+const UNREADABLE_SAVED_SETUP = "Could not read your saved Tandem setup. Try again.";
 
 export interface PickedIntegration {
   /** Stable client-side id, mirrored into `IntegrationConfig.id` on save. */
@@ -62,6 +72,9 @@ export interface PickedIntegration {
   hasStoredSecret: boolean;
   /** True iff the server returned 503 KEYCHAIN_UNAVAILABLE for this integration's setSecret. */
   keychainUnavailable: boolean;
+  /** Built from a saved record (#2198): its id and `tokenSecretRef` are the
+   * record's, so the wizard must never delete that ref on its own. */
+  fromRecord?: true;
 }
 
 export interface IntegrationWizardState {
@@ -94,8 +107,19 @@ export interface IntegrationWizardState {
   readonly channelRegistered: boolean | null;
   /** Whether the keychain is known-unavailable on this server (set after first 503). */
   readonly keychainUnavailable: boolean;
+  /** Something is already set up (#2198): a saved Claude record, or a valid
+   * Tandem entry on disk — what the walkthrough's Keep keeps. */
+  readonly hasSetupToKeep: boolean;
+  /** Set when the walkthrough's Keep fails; the wizard stays open. */
+  readonly keepError: string | null;
   begin(): Promise<void>;
   setPicked(picked: PickedIntegration[]): void;
+  /** The card for a detected install: from its saved record when it has one
+   * (so re-checking a card never mints a fresh id or drops its fields). */
+  pickedForInstall(install: ExistingMcpInstall): PickedIntegration | null;
+  /** The v1.0 walkthrough's Keep this setup (#2198). Writes the walkthrough
+   * marker on the server and nothing else; true on success. */
+  keepSetup(serverVersion: string): Promise<boolean>;
   submitSecret(picked: PickedIntegration, secret: string): Promise<void>;
   save(): Promise<void>;
   reset(): void;
@@ -228,6 +252,17 @@ export function createIntegrationWizard(
   // re-read of detected entries resolves — never flash a wrong label.
   let channelRegistered = $state<boolean | null>(null);
   let keychainUnavailable = $state(false);
+  let keepError = $state<string | null>(null);
+  // The saved setup (#2198), read with detection. `savedRecords` drives the
+  // pre-fill and `hasSetupToKeep`; the rest are the merge's baselines, plain
+  // (non-reactive) because nothing renders them.
+  let savedRecords = $state<IntegrationConfig[]>([]);
+  /** Every ref the saved file holds: never deleted by the wizard's own
+   * clean-ups, which exist for refs minted this session. */
+  let persistedRefs = new Set<string>();
+  let originalRefs = new Map<string, string | undefined>();
+  /** Saved records the user unchecked this session → kept as `skip`. */
+  let deselected = new Set<string>();
   // Monotonic generation counter for `begin()` — a later run invalidates
   // earlier in-flight responses so rapid open/close/reopen can't have the
   // earlier request's response clobber the later one's state.
@@ -245,8 +280,23 @@ export function createIntegrationWizard(
     step = "connect";
     errorMessage = null;
     try {
-      const res = await fetchFn(`${baseUrl}${API_INTEGRATIONS_EXISTING}`);
+      // The saved setup is read alongside detection (#2198). A failed read
+      // stops the wizard rather than falling back to detection alone: a save
+      // built without it is the whole-file clobber the merge exists to prevent.
+      const [res, savedRes] = await Promise.all([
+        fetchFn(`${baseUrl}${API_INTEGRATIONS_EXISTING}`),
+        fetchFn(`${baseUrl}${API_INTEGRATIONS}`),
+      ]);
       if (myGen !== beginGen) return; // a newer begin() ran; drop this response
+      if (!savedRes.ok) {
+        const message = await responseErrorMessage(
+          savedRes,
+          `Could not read your saved Tandem setup (HTTP ${savedRes.status}).`,
+        );
+        if (myGen !== beginGen) return;
+        setError(message);
+        return;
+      }
       if (!res.ok) {
         // #1792: a downgraded `integrations.json` answers 409 with an
         // actionable `message`; without this the wizard died on a bare status
@@ -260,13 +310,30 @@ export function createIntegrationWizard(
         return;
       }
       const body = (await res.json()) as { installs: ExistingMcpInstall[] };
+      const saved = (await savedRes.json()) as IntegrationsFile;
       if (myGen !== beginGen) return;
+      if (!Array.isArray(saved?.integrations)) {
+        setError(UNREADABLE_SAVED_SETUP);
+        return;
+      }
       existing = body.installs;
-      // Preselect everything connectable as soon as detection resolves —
-      // the connect screen renders cards pre-checked, no separate pick step.
+      savedRecords = saved.integrations;
+      persistedRefs = new Set(
+        saved.integrations
+          .map((r) => r.tokenSecretRef)
+          .filter((ref): ref is string => typeof ref === "string" && ref.length > 0),
+      );
+      originalRefs = new Map(saved.integrations.map((r) => [r.id, r.tokenSecretRef]));
+      deselected = new Set();
+      // Preselect as soon as detection resolves — the connect screen renders
+      // cards pre-checked, no separate pick step. With nothing set up that is
+      // everything connectable; otherwise what is set up (#2198), each card
+      // built from its saved record.
+      const selective = preselectsSelectively(body.installs, saved.integrations);
       picked = body.installs
         .filter(isSelectable)
-        .map(detectedToPicked)
+        .filter((i) => preselects(i, matchRecord(i, saved.integrations, body.installs), selective))
+        .map((i) => cardFor(i, saved.integrations, body.installs))
         .filter((p): p is PickedIntegration => p !== null);
     } catch (err) {
       if (myGen !== beginGen) return;
@@ -296,15 +363,38 @@ export function createIntegrationWizard(
     // makes store-then-unpick reachable; the old multi-step flow picked before
     // the separate secrets step, so this couldn't happen. Errors are swallowed
     // — an unreferenced ref in the user's own keychain isn't worth a toast.
-    const dropped = picked.filter(
-      (prev) => prev.config.tokenSecretRef && !next.some((n) => n.id === prev.id),
-    );
+    //
+    // A ref the saved file holds is never deleted here (#2198): unchecking a
+    // pre-filled card keeps its record (as `skip`), and its secret with it.
+    const removed = picked.filter((prev) => !next.some((n) => n.id === prev.id));
+    for (const p of removed) if (p.fromRecord) deselected.add(p.id);
+    for (const n of next) deselected.delete(n.id);
     picked = next;
-    for (const p of dropped) {
+    for (const p of removed) {
       const ref = p.config.tokenSecretRef;
-      if (ref) void keychainBackend.delete(ref);
+      if (ref && !persistedRefs.has(ref)) void keychainBackend.delete(ref);
     }
   };
+
+  /** A detected install's card: from its saved record when it has one. */
+  const cardFor = (
+    install: ExistingMcpInstall,
+    records: readonly IntegrationConfig[],
+    installs: readonly ExistingMcpInstall[],
+  ): PickedIntegration | null => {
+    const record = matchRecord(install, records, installs);
+    if (!record) return detectedToPicked(install);
+    return {
+      id: record.id,
+      config: recordToConfig(install, record),
+      hasStoredSecret: typeof record.tokenSecretRef === "string",
+      keychainUnavailable: false,
+      fromRecord: true,
+    };
+  };
+
+  const pickedForInstall = (install: ExistingMcpInstall): PickedIntegration | null =>
+    cardFor(install, savedRecords, existing);
 
   const submitSecret = async (target: PickedIntegration, secret: string) => {
     const ref = makeSecretRef(target.id);
@@ -344,9 +434,14 @@ export function createIntegrationWizard(
    * second error would replace the more actionable original.
    */
   const cleanupStoredSecrets = async (): Promise<void> => {
+    // Only refs minted this session: a saved one is still referenced by the
+    // file on disk, and deleting it is the SECRET_MISSING orphan (#2198).
     const storedRefs = picked
       .map((p) => p.config.tokenSecretRef)
-      .filter((ref): ref is string => typeof ref === "string" && ref.length > 0);
+      .filter(
+        (ref): ref is string =>
+          typeof ref === "string" && ref.length > 0 && !persistedRefs.has(ref),
+      );
     await Promise.all(storedRefs.map((ref) => keychainBackend.delete(ref)));
   };
 
@@ -383,33 +478,38 @@ export function createIntegrationWizard(
   const save = async () => {
     step = "applying";
     channelRegistered = null;
-    // Determine apply intent per picked integration. Failed-validation
-    // existing entries pre-set to "skip" so re-validated entries don't
-    // get overwritten with a wizard-generated shape that differs (the
-    // user hand-edited a tandem entry to a custom shape; the apply path
-    // would silently replace it with our canonical shape and erase the
-    // customization).
-    const integrations: IntegrationConfig[] = picked.map((p) => {
-      // `other-mcp` is constrained to apply: "skip" by the schema.
-      if (p.config.kind === "other-mcp") {
-        return { ...p.config, apply: "skip" } as IntegrationConfig;
+    // Re-read the saved setup (#2198): the wizard may have been open for
+    // minutes, and a working-directory change persisted meanwhile must not be
+    // overwritten by the copy read at begin().
+    let saved: IntegrationsFile;
+    try {
+      const savedRes = await fetchFn(`${baseUrl}${API_INTEGRATIONS}`);
+      if (!savedRes.ok) {
+        const message = await responseErrorMessage(
+          savedRes,
+          `Could not read your saved Tandem setup (HTTP ${savedRes.status}).`,
+        );
+        await cleanupStoredSecrets();
+        setError(message);
+        return;
       }
-      // Match the picked entry against the existing-config validation
-      // result by configPath (the natural key for both claude-code and
-      // claude-desktop). If the on-disk entry exists and failed
-      // validation, apply: "skip".
-      const configPath = p.config.configPath;
-      const matched = existing.find((e) => e.target.configPath === configPath);
-      const validationFailed = matched !== undefined && tandemEntryValidationFailed(matched);
-      return {
-        ...p.config,
-        apply: validationFailed ? "skip" : "create",
-      } as IntegrationConfig;
+      saved = (await savedRes.json()) as IntegrationsFile;
+      if (!Array.isArray(saved?.integrations)) throw new Error(UNREADABLE_SAVED_SETUP);
+    } catch (err) {
+      await cleanupStoredSecrets();
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    // Apply intent per card (a hand-edited entry that failed validation is
+    // "skip"), the saved records the wizard does not own kept as they are,
+    // and the file in its original order — see integration-wizard-merge.ts.
+    const { file, applyIds, superseded } = buildSaveFile({
+      saved,
+      picked,
+      existing,
+      deselected,
+      originalRefs,
     });
-    const file: IntegrationsFile = {
-      schemaVersion: INTEGRATIONS_SCHEMA_VERSION,
-      integrations,
-    };
     // Once persist returns 200 the integrations file on disk durably
     // references the stored keychain refs, so the catch below must NOT delete
     // them — doing so would dangle the persisted config (and, if apply also
@@ -432,17 +532,28 @@ export function createIntegrationWizard(
         return;
       }
       persisted = true;
+      // The new file holds these refs now; the ones a new token replaced are
+      // referenced by nothing, so they go — only now, never before the persist.
+      persistedRefs = new Set(
+        file.integrations
+          .map((r) => r.tokenSecretRef)
+          .filter((ref): ref is string => typeof ref === "string" && ref.length > 0),
+      );
+      for (const ref of superseded) void keychainBackend.delete(ref);
       const persistBody = (await persistRes.json()) as {
         ids: string[];
         confirmationNonce: string;
       };
 
-      // Apply — write the persisted entries to Claude's config.
+      // Apply — write the PICKED entries to Claude's config. Never the
+      // server's full id list: a kept `other-mcp` record would answer
+      // OTHER_MCP_NOT_APPLICABLE, and a kept record for a target the user did
+      // not pick would be written to a config they never chose (#2198).
       const applyRes = await fetchFn(`${baseUrl}${API_INTEGRATIONS_APPLY}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ids: persistBody.ids,
+          ids: applyIds,
           confirmationNonce: persistBody.confirmationNonce,
         }),
       });
@@ -467,11 +578,43 @@ export function createIntegrationWizard(
     }
   };
 
+  const keepSetup = async (serverVersion: string): Promise<boolean> => {
+    keepError = null;
+    try {
+      const res = await fetchFn(`${baseUrl}${API_INTEGRATIONS_WALKTHROUGH_CONFIRM}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ serverVersion }),
+      });
+      if (!res.ok) {
+        keepError = await responseErrorMessage(
+          res,
+          `Could not save that you kept your setup (HTTP ${res.status}).`,
+        );
+        return false;
+      }
+      return true;
+    } catch (err) {
+      keepError =
+        err instanceof TypeError
+          ? "Could not reach the Tandem server. Make sure Tandem is running, then try again."
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      return false;
+    }
+  };
+
   const reset = () => {
     step = "connect";
     detecting = false;
     existing = [];
     picked = [];
+    savedRecords = [];
+    persistedRefs = new Set();
+    originalRefs = new Map();
+    deselected = new Set();
+    keepError = null;
     errorMessage = null;
     applyResults = [];
     tandemClaude = null;
@@ -521,8 +664,16 @@ export function createIntegrationWizard(
     get keychainUnavailable() {
       return keychainUnavailable;
     },
+    get hasSetupToKeep() {
+      return savedRecords.some((r) => r.kind !== "other-mcp") || existing.some(hasValidTandemEntry);
+    },
+    get keepError() {
+      return keepError;
+    },
     begin,
     setPicked,
+    pickedForInstall,
+    keepSetup,
     submitSecret,
     save,
     reset,

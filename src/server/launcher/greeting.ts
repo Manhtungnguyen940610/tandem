@@ -25,6 +25,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { atomicWriteConfigFile } from "../integrations/storage.js";
+import { isV1Release } from "../version-check.js";
 
 export const GREETING_FILE_NAME = "first-run-greeting.json";
 const GREETING_VERSION = 1;
@@ -73,13 +74,8 @@ function readRecord(base: string): GreetingRecord | null | "unreadable" {
   }
 }
 
-/** `1.0.0` or later, release only. A prerelease (`1.0.0-rc.1`) is NOT v1.0:
- * a tester on a release candidate must not spend the v1.0 greeting before
- * v1.0 ships. Anything unparseable (a dev fallback version) is not either. */
-export function isV1Release(version: string | undefined): boolean {
-  const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
-  return m !== null && Number(m[1]) >= 1;
-}
+/** Re-exported: the walkthrough (#2198) and this greeting share one "v1.0". */
+export { isV1Release };
 
 /** Whether Tandem's Claude still owes the greeting. Synchronous; never throws. */
 export function isGreetingOwed(base: string): boolean {
