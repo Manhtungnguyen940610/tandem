@@ -331,6 +331,20 @@ describe("an open standalone stream pins its session against the reaper", () => 
     expect(theirs.status).toBe(200);
   });
 
+  it("Claude Desktop, by its initialize's clientInfo name, is not another AI (#2199)", async () => {
+    const desktop = await openSession("claude-ai");
+    const desktopStream = await openStream(desktop.sessionId);
+    try {
+      expect(isOtherMcpClientLive(new Set())).toBe(false);
+      // Any other client name still counts — including one that is close.
+      const other = await openSession("claude-ai-not");
+      expect(other.status).toBe(200);
+      expect(isOtherMcpClientLive(new Set())).toBe(true);
+    } finally {
+      await desktopStream.close();
+    }
+  });
+
   // The real wiring for "live": an open stream keeps a quiet client counted,
   // and once its stream closes it drops out of `sessionCount` while staying in
   // `hasSession`. Positive arm first, anchored, so a session that never

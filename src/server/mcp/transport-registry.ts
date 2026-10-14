@@ -44,6 +44,8 @@
  * the normal state of a long-lived desktop client between tool calls.
  */
 
+import { sanitizeForLog } from "../log-sanitize.js";
+
 /** Minimal structural type — the registry only ever closes a session's server. */
 export interface ClosableServer {
   close(): Promise<void>;
@@ -60,6 +62,12 @@ export interface McpSessionEntry<S extends ClosableServer = ClosableServer, T = 
    * `.mcp.json` entries — see `sessions/context.ts`.
    */
   claudeSessionId?: string;
+  /**
+   * The client's self-reported `clientInfo.name` from its `initialize`
+   * (`readClientName`), when it sent a usable one. Read only by
+   * {@link hasLiveEntryOtherThan}; never returned by any route.
+   */
+  clientName?: string;
   createdAt: number;
   lastSeenAt: number;
   /**
@@ -220,10 +228,40 @@ export function hasLiveEntryFor(
 }
 
 /**
+ * Claude Desktop's `clientInfo.name` (#2199). Self-reported and unverified;
+ * the hand-test list asks for it to be read from the "MCP session established"
+ * log line on a real install.
+ */
+export const CLAUDE_DESKTOP_CLIENT_NAME = "claude-ai";
+
+/**
+ * The `clientInfo.name` an `initialize` request carries, or `undefined`.
+ * Written to the log, and a log is pasted into bug reports, so a name that
+ * `sanitizeForLog` would alter (a control character, a bidi override) or
+ * longer than 64 is dropped rather than trimmed — one strip rule, the log's.
+ */
+export function readClientName(initialize: unknown): string | undefined {
+  const name = (initialize as { params?: { clientInfo?: { name?: unknown } } } | null)?.params
+    ?.clientInfo?.name;
+  if (typeof name !== "string" || name.length === 0 || name.length > 64) return undefined;
+  return sanitizeForLog(name) === name ? name : undefined;
+}
+
+/**
  * Whether a LIVE entry from any client other than the Claude sessions in
  * `ownClaudeSessionIds` is in the registry — the launcher's "is another AI on?"
  * (#2196), which keeps a chat message from starting Tandem's Claude while the
  * user's own AI is attached to answer it.
+ *
+ * **Claude Desktop does not count (Bryan, 2026-10-14; #2199).** Tandem has no
+ * way to push to it: it sees the chat only when the user asks it something in
+ * Desktop and it calls `tandem_checkInbox`. So it is not an AI that will
+ * answer the message, and Tandem's own Claude starts beside it. The two then
+ * share one inbox ledger — chat `read` stamps and the surfaced-id set are
+ * process-wide — so whichever polls first takes a message; that race is the
+ * accepted cost. Matched on the exact self-reported name: an unknown or absent
+ * name still counts, which fails toward not starting a second AI. A local
+ * client claiming the name gains nothing but Tandem's own Claude starting.
  *
  * Liveness is `isLiveEntry`, the same rule `/health`'s `sessionCount` uses, so
  * the chat panel and the launcher agree on who is attached. The own ids are
@@ -233,7 +271,9 @@ export function hasLiveEntryFor(
  * fails toward not starting a second AI.
  */
 export function hasLiveEntryOtherThan(
-  entries: ReadonlyArray<Pick<McpSessionEntry, "claudeSessionId" | "openStreams" | "lastSeenAt">>,
+  entries: ReadonlyArray<
+    Pick<McpSessionEntry, "claudeSessionId" | "clientName" | "openStreams" | "lastSeenAt">
+  >,
   ownClaudeSessionIds: ReadonlySet<string>,
   now: number,
 ): boolean {
@@ -241,6 +281,7 @@ export function hasLiveEntryOtherThan(
   return entries.some(
     (e) =>
       isLiveEntry(e, now) &&
+      e.clientName !== CLAUDE_DESKTOP_CLIENT_NAME &&
       (e.claudeSessionId === undefined || !own.has(claudeIdKey(e.claudeSessionId))),
   );
 }

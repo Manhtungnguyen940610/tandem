@@ -47,6 +47,9 @@ bulk-confirm-btn
 bulk-dismiss-btn
 chat-anchor-quote-{*}
 chat-author-{*}
+chat-claude-code-offer
+chat-claude-code-offer-dismiss
+chat-claude-code-offer-setup
 chat-composer-input
 chat-greeting-late
 chat-greeting-late-action
@@ -240,6 +243,12 @@ integration-wizard-autostart-error
 integration-wizard-autostart-toggle
 integration-wizard-card-{*}
 integration-wizard-check-again
+integration-wizard-check-sign-in
+integration-wizard-claude-code-offer
+integration-wizard-claude-code-offer-error
+integration-wizard-claude-code-offer-install
+integration-wizard-claude-code-offer-installed
+integration-wizard-claude-code-offer-recheck
 integration-wizard-close
 integration-wizard-connect-btn
 integration-wizard-cowork-back

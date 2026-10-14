@@ -35,10 +35,7 @@ import type {
   ClaudeCodeIntegration,
   IntegrationConfig,
 } from "../../shared/integrations/contract.js";
-import {
-  detectClaudeCli,
-  isBareNameLaunchable,
-} from "../../shared/integrations/detect-claude-cli.js";
+import { resolveClaudeLaunch } from "../../shared/integrations/detect-claude-cli.js";
 import {
   CLAUDE_STREAM_JSON_FLAGS,
   GREETING_REPLY_WINDOW_MS,
@@ -128,6 +125,14 @@ interface SupervisorOpts {
    * window silently, with nothing in the type to warn the next editor.
    */
   probeCliUsable?: () => boolean;
+  /**
+   * Seam onto the program the launcher spawns (#2199): an ABSOLUTE path, or
+   * `null` when nothing startable resolves — then nothing is spawned and the
+   * status reads `cli-unusable`. Defaults to `resolveClaudeLaunch().command`,
+   * read per start. Synchronous for the same reason as `probeCliUsable`, which
+   * defaults to "this resolves".
+   */
+  resolveClaudeCommand?: () => string | null;
   /**
    * Seam onto the licence decision (#1521). Defaults to the live `aiRefusal`,
    * which admits on its first line while the gate ships dark.
@@ -242,18 +247,6 @@ interface SupervisorOpts {
   walkthroughPending?: () => boolean;
   /** Override for `GREETING_REPLY_WINDOW_MS`, for tests. */
   greetingWindowMs?: number;
-}
-
-/**
- * Default `probeCliUsable`: the CLI is usable if it exists *and* the launcher's
- * bare-name spawn can actually start it. The second half is the Windows npm
- * shim case — `claude.cmd` on PATH answers "installed" to every check a user
- * would run by hand, and `CreateProcessW` still cannot launch it (#1273).
- *
- * Both halves are `statSync`-based, hence synchronous; see `probeCliUsable`.
- */
-function defaultProbeCliUsable(): boolean {
-  return detectClaudeCli() !== "NOT_INSTALLED" && isBareNameLaunchable();
 }
 
 /** Exported for test only — the `"external"` argument below is the single line
@@ -553,7 +546,9 @@ export interface Supervisor {
  * entry was removed ends Claude, and a start-fresh discards the conversation
  * pointer. Acceptable, because the alternative is reading the store under the
  * lock before stopping, and a removed entry is a deliberate act. */
-export type RespawnResult = { spawned: true } | { spawned: false; why: "no-integration" };
+export type RespawnResult =
+  | { spawned: true }
+  | { spawned: false; why: "no-integration" | "cli-unusable" };
 
 /** Discriminated union: when `running === false` the extra fields are the
  * optional `lastError`, `restartPending` and `configured`; when `running === true` all process-level fields are
@@ -963,7 +958,11 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   const subscribeToEvents = opts.subscribeToEvents ?? defaultSubscribeToEvents;
   const subscribeDuringGap = opts.subscribeDuringGap ?? defaultSubscribeDuringGap;
   const wakeLatchMs = opts.wakeLatchMs ?? WAKE_LATCH_MAX_MS;
-  const probeCliUsable = opts.probeCliUsable ?? defaultProbeCliUsable;
+  // The command and the usable probe are one reading (#2199): a probe that
+  // could say "usable" while the spawn has nothing to run (or the reverse) is
+  // the #1273 crash loop with a Restart that cannot help.
+  const resolveCommand = opts.resolveClaudeCommand ?? (() => resolveClaudeLaunch().command);
+  const probeCliUsable = opts.probeCliUsable ?? (() => resolveCommand() !== null);
   const reportDeliveryTrip = opts.reportDeliveryTrip ?? (() => {});
   const turnReceiptMs = opts.turnReceiptMs ?? TURN_RECEIPT_MS;
   const resumeConfirmMs = opts.resumeConfirmMs ?? RESUME_CONFIRM_MS;
@@ -1642,10 +1641,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     throw new Error(`${REAPER_NOT_FOUND_MARKER} (checked ${adjacent})`);
   }
 
-  // TANDEM_CLAUDE_CMD honors PATH search via spawn. Security boundary is
-  // "user controls their own PATH" — same as running `claude` in any terminal.
-  function claudeCommand(): string {
-    return process.env.TANDEM_CLAUDE_CMD || "claude";
+  /**
+   * Nothing startable resolved (#2199): record it where the status shows it,
+   * and spawn nothing. Never a bare name in its place — on Windows the
+   * reaper's `CreateProcessW` would search the user's working directory for
+   * it first. Trips no breaker: there is no child and no loop, and a tripped
+   * breaker would make the next setup Apply hold instead of start. Recorded
+   * only with no child alive, so a Restart refused here leaves a running
+   * Claude's clean status alone.
+   */
+  function recordCliUnusable(where: string): void {
+    if (child === null) lastError = "cli-unusable";
+    console.error(
+      `[Launcher] ${where}: Claude Code was not found (PATH, ~/.local/bin, TANDEM_CLAUDE_CMD) — not spawning`,
+    );
   }
 
   /** Read the settings for a start (#2195); see `lastGoodSettings`. */
@@ -1719,11 +1728,17 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
 
   /** `idleLimitMs`: stop the child after this long without a turn, or `null`
    * to keep it running (#2195). */
-  async function spawnOnce(plan: SpawnPlan, idleLimitMs: number | null): Promise<void> {
+  /** `claudeBin` is the caller's `resolveCommand()` answer — absolute, never a
+   * bare name (#2199). The caller resolves it, so a missing CLI is answered on
+   * its own terms (`cli-unusable`) rather than as a spawn failure. */
+  async function spawnOnce(
+    plan: SpawnPlan,
+    idleLimitMs: number | null,
+    claudeBin: string,
+  ): Promise<void> {
     if (child) throw new Error("Supervisor already running — call stop() first");
 
     const reaper = reaperPath();
-    const claudeBin = claudeCommand();
     const claudeArgs = buildClaudeArgs(plan);
 
     const reaperArgs = [String(process.pid), claudeBin, ...claudeArgs];
@@ -2556,8 +2571,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // the wizard tells them to install software they already have.
       //
       // Probed once, here, rather than per status poll: it is a filesystem walk,
-      // and the answer cannot change usefully mid-run anyway (the supervisor
-      // spawns from the PATH this process started with). Synchronous, so this
+      // and a CLI installed later is found by the next Start anyway, which
+      // resolves its command afresh (#2199). Synchronous, so this
       // and `breakerTripped` above land in the same tick — see `probeCliUsable`.
       // Guarded because this runs inside the child's "error"/"exit" handlers,
       // which Node calls synchronously from `emit()` with no try/catch in this
@@ -2725,8 +2740,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       }
       return;
     }
+    const claudeBin = resolveCommand();
+    if (claudeBin === null) {
+      recordCliUnusable("Starting Claude");
+      return;
+    }
     try {
-      await spawnOnce(plan, idleMsFor(latestSettings(settings)));
+      await spawnOnce(plan, idleMsFor(latestSettings(settings)), claudeBin);
       // Reset backoff once a spawn runs long enough to be considered stable.
       // Must match RESUME_CONFIRM_MS — a doomed --resume exits at ~6s, so
       // the old 5s timer fired while the process was still alive, resetting
@@ -2822,6 +2842,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (child === null) recordLicenceRefusal(refusal);
       throw new LicenseRefusedError(refusal);
     }
+    // Nothing to spawn (#2199): with a Claude alive, checked here, BEFORE the
+    // stop, for the same reason as the licence — a Restart must not kill a
+    // healthy Claude only to find it cannot start another. With none, after
+    // the plan (`stopAndSpawn`), so a user with no integration still hears
+    // "not set up" rather than "not found".
+    if (child !== null && resolveCommand() === null) {
+      recordCliUnusable("Restarting Claude");
+      return { spawned: false, why: "cli-unusable" };
+    }
     // Counted from BEFORE the stop (#2180): `kill()` marks the child killed at
     // once, so `status()` reads not-running for the whole SIGTERM wait, and
     // that is exactly the window that used to offer a Restart button.
@@ -2840,7 +2869,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     byMessage: boolean,
   ): Promise<RespawnResult> {
     await stopInternal();
-    if (clearSession) clearSavedSession();
+    // Resolved before the session is dropped (#2199 review): a Start fresh
+    // that finds no Claude Code must not have deleted the conversation on its
+    // way to saying so. (Still answered after the plan, so a user with no
+    // integration hears "not set up" — and that start fresh still drops it,
+    // as before.)
+    const claudeBin = resolveCommand();
+    if (clearSession && claudeBin !== null) clearSavedSession();
     // relaunch/startFresh always mean "user is actively asking" → clear breaker.
     // A start for a message never runs beside a tripped breaker (the standby
     // watch and `startForMessage` both refuse it), so it has none to clear; it
@@ -2864,12 +2899,19 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       settings = await readSettingsNow();
       plan = await buildPlan(cwdOverride);
     } finally {
-      // No spawn is coming (no integration, or a read threw). From `off` the
-      // watch armed above owes it nothing (#1866); the standby watch still
-      // stands, so a later message can try again.
-      if (plan === null && standby === "off") disarmGapWatch();
+      // No spawn is coming (no integration, nothing to run, or a read threw).
+      // From `off` the watch armed above owes it nothing (#1866); the standby
+      // watch still stands, so a later message can try again.
+      if ((plan === null || claudeBin === null) && standby === "off") disarmGapWatch();
     }
-    if (!plan || !settings) return { spawned: false, why: "no-integration" };
+    if (!plan || !settings) {
+      if (clearSession && claudeBin === null) clearSavedSession();
+      return { spawned: false, why: "no-integration" };
+    }
+    if (claudeBin === null) {
+      recordCliUnusable("Starting Claude");
+      return { spawned: false, why: "cli-unusable" };
+    }
     // A user start while the mode is `off` turns it back on as `on-click`
     // (#2195; Bryan's #2196 answer, applied to every user start). After the
     // plan, so a start that finds no integration changes nothing, and after
@@ -2884,7 +2926,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (standby === "off") setStandby("awaiting-start");
     }
     await persistRequestedCwd(plan, cwdOverride, opts?.persistCwd);
-    await spawnOnce(plan, idleMsFor(latestSettings(settings)));
+    await spawnOnce(plan, idleMsFor(latestSettings(settings)), claudeBin);
     return { spawned: true };
   }
 
@@ -3115,6 +3157,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         ...(greetingLate() ? { greetingLate: true as const } : {}),
       };
     }
+    // A `cli-unusable` with no crash behind it (#2199) is a reading of the
+    // filesystem, so it lapses once Claude Code is there: otherwise it would
+    // mask the standby's Start, and the only remedy it names (Set up) would
+    // keep offering an install the user has already done. One resolve per
+    // poll, only while this is the error; a tripped breaker's copy waits for
+    // the user's Restart as before.
+    if (
+      lastError === "cli-unusable" &&
+      !breakerTripped &&
+      child === null &&
+      resolveCommand() !== null
+    ) {
+      lastError = undefined;
+    }
     const stopped: Extract<SupervisorStatus, { running: false }> = { running: false };
     if (lastError) stopped.lastError = lastError;
     if (restartPending()) stopped.restartPending = true;
@@ -3201,6 +3257,17 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       if (refusal !== null) {
         recordLicenceRefusal(refusal);
         return decide("refused");
+      }
+      // Checked before "starting" is promised (#2199): a done screen that says
+      // starting and then shows nothing is the false claim this answer exists
+      // to avoid.
+      if (resolveCommand() === null) {
+        recordCliUnusable("Setup wrote a Claude Code entry");
+        // Nothing started, so nothing was released: the next Apply — after
+        // the user installs Claude Code — releases the walkthrough's hold as
+        // this one would have.
+        walkthroughHold = heldForWalkthrough;
+        return decide("cli-unusable");
       }
       decide("starting");
       console.error("[Launcher] Setup wrote a Claude Code entry — starting Tandem's Claude");

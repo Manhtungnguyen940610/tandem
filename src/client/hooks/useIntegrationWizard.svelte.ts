@@ -54,6 +54,7 @@ import {
   buildSaveFile,
   isSomethingSetUp,
   matchRecord,
+  normalizeConfigPath,
   preselects,
   recordToConfig,
   refsOf,
@@ -117,6 +118,19 @@ export interface IntegrationWizardState {
   /** Set when the walkthrough's Keep fails; the wizard stays open. */
   readonly keepError: string | null;
   begin(): Promise<void>;
+  /**
+   * Re-read the detected installs WITHOUT starting over (#2199) — after the
+   * wizard installed Claude Code, or on the offer's Check again. The user's
+   * picks are kept; nothing they unticked comes back. `pickNewOfKind` ticks
+   * an install of that kind that was not detected before this call — the
+   * Install click is the opt-in (Bryan, 2026-10-14). Joins the current
+   * `begin()`: a response landing after `reset()` or a newer `begin()` is
+   * dropped. Resolves the newly detected installs (empty when none, or when
+   * the read failed or was superseded).
+   */
+  refreshDetected(opts?: {
+    pickNewOfKind?: ExistingMcpInstall["target"]["kind"];
+  }): Promise<ExistingMcpInstall[]>;
   setPicked(picked: PickedIntegration[]): void;
   /** The card for a detected install: from its saved record when it has one
    * (so re-checking a card never mints a fresh id or drops its fields). */
@@ -360,6 +374,34 @@ export function createIntegrationWizard(
       // Only the winning generation clears the loading flag — a superseded
       // begin() finishing late must not hide the newer run's loading state.
       if (myGen === beginGen) detecting = false;
+    }
+  };
+
+  const refreshDetected = async (
+    opts: { pickNewOfKind?: ExistingMcpInstall["target"]["kind"] } = {},
+  ): Promise<ExistingMcpInstall[]> => {
+    const myGen = beginGen;
+    if (step !== "connect" || detecting) return [];
+    try {
+      const res = await fetchFn(`${baseUrl}${API_INTEGRATIONS_EXISTING}`);
+      if (myGen !== beginGen || step !== "connect" || !res.ok) return [];
+      const body = (await res.json()) as { installs?: unknown };
+      if (myGen !== beginGen || step !== "connect" || !Array.isArray(body.installs)) return [];
+      const installs = body.installs as ExistingMcpInstall[];
+      const known = new Set(existing.map((i) => normalizeConfigPath(i.target.configPath)));
+      const fresh = installs.filter((i) => !known.has(normalizeConfigPath(i.target.configPath)));
+      existing = installs;
+      const kind = opts.pickNewOfKind;
+      for (const install of fresh) {
+        if (kind === undefined || install.target.kind !== kind || !isSelectable(install)) continue;
+        // One at a time: `pickedForInstall` reads `picked`, so two new installs
+        // never claim one saved record.
+        const card = pickedForInstall(install);
+        if (card) picked = [...picked, card];
+      }
+      return fresh;
+    } catch {
+      return [];
     }
   };
 
@@ -608,6 +650,8 @@ export function createIntegrationWizard(
   };
 
   const reset = () => {
+    // Anything still in flight belongs to the wizard as it was.
+    beginGen++;
     step = "connect";
     detecting = false;
     existing = [];
@@ -673,6 +717,7 @@ export function createIntegrationWizard(
       return keepError;
     },
     begin,
+    refreshDetected,
     setPicked,
     pickedForInstall,
     keepSetup,

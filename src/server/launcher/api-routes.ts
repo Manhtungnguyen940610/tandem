@@ -64,6 +64,7 @@ import type { ClaudeCodeIntegration } from "../../shared/integrations/contract.j
 import {
   isTransientlyUnavailable,
   LAUNCHER_CWD_MAX_LENGTH,
+  LAUNCHER_ERROR_CLI_UNUSABLE,
   LAUNCHER_ERROR_IN_PROGRESS,
   LAUNCHER_ERROR_INVALID_BODY,
   LAUNCHER_ERROR_INVALID_NONCE,
@@ -90,7 +91,12 @@ import { type AiRefusal, sendAiRefusal } from "../license/ai-refusal.js";
 import type { Handler } from "../mcp/routes/_shared.js";
 import { previewCwdDrift } from "./cwd-preview.js";
 import { readLauncherSettings, SettingsNewerError, updateLauncherSettings } from "./settings.js";
-import { LicenseRefusedError, resolveRouteCwd, type Supervisor } from "./supervisor.js";
+import {
+  LicenseRefusedError,
+  type RespawnResult,
+  resolveRouteCwd,
+  type Supervisor,
+} from "./supervisor.js";
 
 /**
  * Single-use nonce gate for mutating launcher routes.
@@ -367,6 +373,23 @@ function makeStatusHandler(deps: LauncherRoutesDeps): Handler {
   };
 }
 
+/** A start that spawned nothing: no integration, or (#2199) no Claude Code
+ * program to start (409, a running Claude left alone). */
+function sendNotSpawned(
+  res: Response,
+  why: Extract<RespawnResult, { spawned: false }>["why"],
+): void {
+  if (why === "cli-unusable") {
+    res.status(409).json({
+      error: "CONFLICT",
+      code: LAUNCHER_ERROR_CLI_UNUSABLE,
+      message: "Tandem can't find Claude Code to start. Install it from Connect AI.",
+    });
+    return;
+  }
+  sendNoIntegration(res);
+}
+
 /** 404 for a relaunch / start-fresh whose plan found no launchable claude-code
  * entry (#2180). The message is shown to the user verbatim by the client's
  * launcher toast, so it says what to do. */
@@ -606,7 +629,7 @@ function makeRelaunchHandler(deps: LauncherRoutesDeps): Handler {
       if (deps.relaunchHook) await deps.relaunchHook();
       const result = await sup.relaunch(cwd, { persistCwd: parsePersistCwd(body) });
       if (!result.spawned) {
-        sendNoIntegration(res);
+        sendNotSpawned(res, result.why);
         return;
       }
       res.json({ ok: true, cwd: landedCwd(sup, cwd) });
@@ -658,7 +681,7 @@ function makeStartFreshHandler(deps: LauncherRoutesDeps): Handler {
       if (deps.startFreshHook) await deps.startFreshHook();
       const result = await sup.startFresh(cwd, { persistCwd: parsePersistCwd(body) });
       if (!result.spawned) {
-        sendNoIntegration(res);
+        sendNotSpawned(res, result.why);
         return;
       }
       res.json({ ok: true, cwd: landedCwd(sup, cwd) });
@@ -771,7 +794,7 @@ async function startExistingByUser(sup: Supervisor, nonce: unknown, res: Respons
   try {
     const result = await sup.startByUser();
     if (!result.spawned) {
-      sendNoIntegration(res);
+      sendNotSpawned(res, result.why);
       return;
     }
     res.json({ ok: true, started: true });

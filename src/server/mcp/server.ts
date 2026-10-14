@@ -64,6 +64,7 @@ import {
   isLiveEntry,
   type McpSessionEntry,
   type McpSessionRegistry,
+  readClientName,
 } from "./transport-registry.js";
 
 // Injected by tsup at build time; absent in tsx dev and vitest, where createRequire
@@ -531,6 +532,7 @@ async function openSession(
   registry: McpSessionRegistry<McpServer, StreamableHTTPServerTransport>,
   buildServer: () => McpServer,
   claudeSessionId: string | undefined,
+  clientName: string | undefined,
   handshake: (transport: StreamableHTTPServerTransport) => Promise<void>,
 ): Promise<void> {
   const server = buildServer();
@@ -538,10 +540,11 @@ async function openSession(
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
     onsessioninitialized: async (sessionId) => {
-      await registry.add({ sessionId, server, transport, claudeSessionId });
+      await registry.add({ sessionId, server, transport, claudeSessionId, clientName });
       console.error(
         `[Tandem] MCP session established: ${sessionId}` +
-          `${claudeSessionId ? ` (claude session ${claudeSessionId})` : ""} — ${registry.size} live`,
+          `${claudeSessionId ? ` (claude session ${claudeSessionId})` : ""}` +
+          `${clientName ? ` (client ${clientName})` : ""} — ${registry.size} live`,
       );
     },
     // Fires on DELETE /mcp. Dropping the entry here (rather than only in the
@@ -899,10 +902,14 @@ export async function startMcpServerHttp(
 
     if (isInit) {
       const claudeSessionId = readClaudeSessionHeader(req);
+      // From the element that IS the initialize, in a batch too (#2199).
+      const clientName = readClientName(
+        Array.isArray(body) ? body.find(isInitializeRequest) : body,
+      );
       try {
         // handleRequest is what mints the session id and fires
         // onsessioninitialized, so the registry entry appears during this call.
-        await openSession(registry, buildServer, claudeSessionId, (transport) =>
+        await openSession(registry, buildServer, claudeSessionId, clientName, (transport) =>
           runWithMcpContext({ claudeSessionId }, () => transport.handleRequest(req, res, body)),
         );
       } catch (err) {

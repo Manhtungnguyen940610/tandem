@@ -267,6 +267,9 @@ function makeSupervisor(extra: ExtraOpts = {}): {
   const callbacks = new Set<(event: TandemEvent) => void>();
   const sup = createSupervisor({
     probeCliUsable: () => true,
+    // Spawn is mocked; the command only has to resolve (#2199), whatever the
+    // host has installed.
+    resolveClaudeCommand: () => process.execPath,
     restartBackoffsMs: [0],
     ...extra,
     integrationsBase: baseDir,
@@ -2573,6 +2576,7 @@ describe("#2196 — the standby watch's DEFAULT subscription, against the real q
     writeLauncherSettingsFile({ startMode: "off", lifetime: "always", idleMinutes: 30 });
     const sup = createSupervisor({
       probeCliUsable: () => true,
+      resolveClaudeCommand: () => process.execPath,
       restartBackoffsMs: [0],
       integrationsBase: baseDir,
       subscribeToEvents: () => () => {},
@@ -3170,5 +3174,109 @@ describe("#2197 — the one-time greeting", () => {
     exitChild(children[0], 1);
     await settle();
     expect(sup.status()).toMatchObject({ running: false, greetingLate: true });
+  });
+});
+
+// --- #2199 ----------------------------------------------------------------------
+
+describe("#2199 — no Claude Code to start: nothing is spawned, and nothing is broken", () => {
+  /** A command the test can take away and give back. */
+  function withCommand(initial: string | null) {
+    let command = initial;
+    return {
+      opts: { resolveClaudeCommand: () => command },
+      set: (next: string | null) => {
+        command = next;
+      },
+    };
+  }
+
+  it("a boot spawns nothing, reads cli-unusable — and trips no breaker, so the next Apply starts it", async () => {
+    const cmd = withCommand(null);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.start();
+    await sleep(30);
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toMatchObject({ running: false, lastError: "cli-unusable" });
+    cmd.set(process.execPath);
+    expect(await sup.startAfterSetup()).toBe("starting");
+    await nthChild(1);
+  });
+
+  it("an Apply with nothing to start answers 'cli-unusable', never a 'starting' that shows nothing", async () => {
+    writeIntegrations([]);
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.start();
+    writeIntegrations(null);
+    cmd.set(null);
+    expect(await sup.startAfterSetup()).toBe("cli-unusable");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+    expect(sup.status()).toMatchObject({ lastError: "cli-unusable" });
+  });
+
+  it("a Restart that finds no CLI leaves the running Claude alone, status clean", async () => {
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.start();
+    const child1 = await nthChild(1);
+    cmd.set(null);
+    await expect(sup.relaunch()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    await expect(sup.startFresh()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(child1.killed).toBe(false);
+    expect(children).toHaveLength(1);
+    expect(sup.status()).toMatchObject({ running: true });
+    expect(sup.status()).not.toHaveProperty("lastError", "cli-unusable");
+  });
+
+  it("a Start fresh that finds no CLI keeps the conversation it was about to drop", async () => {
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.startFresh(cwdDir);
+    await nthChild(1);
+    const sessionFile = path.join(baseDir, "launcher-session.json");
+    const before = fs.readFileSync(sessionFile, "utf8");
+    cmd.set(null);
+    exitChild(children[0], 1);
+    // The crash restart finds nothing to run.
+    await waitFor(() => sup.status().lastError === "cli-unusable", "the restart's diagnosis");
+    await expect(sup.startFresh()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(fs.readFileSync(sessionFile, "utf8")).toBe(before);
+  });
+
+  it("the diagnosis lapses once Claude Code is there, so the standby's Start shows again", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    const cmd = withCommand(null);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.start();
+    await expect(sup.startByUser()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(sup.status()).toMatchObject({ lastError: "cli-unusable" });
+    expect(sup.status()).not.toHaveProperty("standby");
+    cmd.set(process.execPath);
+    expect(sup.status()).not.toHaveProperty("lastError");
+    expect(sup.status()).toMatchObject({ standby: "awaiting-start" });
+  });
+
+  it("an Apply that found no CLI keeps the walkthrough's hold for the Apply after the install", async () => {
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "always", idleMinutes: 30 });
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor({ ...cmd.opts, walkthroughPending: () => true });
+    await sup.start();
+    cmd.set(null);
+    expect(await sup.startAfterSetup()).toBe("cli-unusable");
+    cmd.set(process.execPath);
+    expect(await sup.startAfterSetup()).toBe("starting");
+    await nthChild(1);
+  });
+
+  it("a Start with no CLI and no Claude says so; with no integration it still says not set up", async () => {
+    const cmd = withCommand(null);
+    const { sup } = makeSupervisor(cmd.opts);
+    await expect(sup.startByUser()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(sup.status()).toMatchObject({ running: false, lastError: "cli-unusable" });
+    writeIntegrations([]);
+    await expect(sup.relaunch()).resolves.toEqual({ spawned: false, why: "no-integration" });
+    expect(children).toHaveLength(0);
   });
 });

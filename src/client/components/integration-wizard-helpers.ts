@@ -107,12 +107,52 @@ export function pushSupportNote(
   return targetPushSupport(kind) === "none" ? NO_PUSH_TRANSPORT : null;
 }
 
+/** The done screen's sign-in step (#2199): Claude Code runs but has never been
+ * signed in. "Open a new terminal" rather than a path: the installer adds
+ * `~/.local/bin` to the PATH of terminals opened after it, and a typed path
+ * differs per shell. */
+const TANDEM_CLAUDE_SIGN_IN_LINE =
+  "One more step: sign in to Claude Code. Open a new terminal, run claude, and sign in when it asks — you can close the terminal once you're signed in. Then choose Check sign-in.";
+
 /** Readiness's live view of Tandem's Claude, for the done screen's line. */
 export interface TandemClaudeLive {
   running: boolean;
   /** `launcherRemedy`: non-null when it is stopped and something would fix it. */
   remedy: AiRemedy | null;
   standby: LauncherStandby | null;
+}
+
+/**
+ * Whether the done screen's line about Tandem's own Claude is the "running"
+ * or "starting" one (#2199) — the only case where "open the chat panel to
+ * talk to it" is true. One predicate, so the guidance above that line can
+ * never contradict it: a standby, a sign-in stop or any other remedy reads
+ * as held or failed there.
+ */
+export function tandemClaudeIsStartingOrRunning(
+  initial: TandemClaudeAfterSetup | null,
+  live: TandemClaudeLive | null,
+): boolean {
+  if (live?.running === true) return initial !== null;
+  return (
+    (initial === "starting" || initial === "running") &&
+    !live?.standby &&
+    (live?.remedy == null || live.remedy === "start")
+  );
+}
+
+/** The done screen is at its sign-in step (#2199): the line above says so, and
+ * the screen offers Check sign-in — one predicate, so the two never part. */
+export function tandemClaudeNeedsSignIn(
+  initial: TandemClaudeAfterSetup | null,
+  live: TandemClaudeLive | null,
+): boolean {
+  return (
+    initial !== null &&
+    initial !== "unknown" &&
+    live?.running !== true &&
+    live?.remedy === "sign-in"
+  );
 }
 
 /**
@@ -152,6 +192,11 @@ export function tandemClaudeDoneCopy(
   if (live?.running) {
     return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there, unless Solo mode is on.";
   }
+  // Next, whatever the Apply answered (#2199): a Claude Code that runs but is
+  // not signed in is the one thing still in the way, and the step is the
+  // user's. Ahead of the switch, so an `other-ai` or `held` answer that a
+  // later Start overtook does not keep its stale line.
+  if (tandemClaudeNeedsSignIn(initial, live)) return TANDEM_CLAUDE_SIGN_IN_LINE;
   // The launcher's answer timed out, and nothing since says it is running.
   if (initial === "unknown") return null;
   if (initial === "starting" || initial === "running") {
@@ -170,6 +215,8 @@ export function tandemClaudeDoneCopy(
       return "Tandem's AI features are off, so it didn't start its own Claude. See Settings → License.";
     case "not-configured":
       return "Tandem couldn't find the Claude Code setup it just saved, so it didn't start its own Claude. Try running setup again.";
+    case "cli-unusable":
+      return "Tandem couldn't find Claude Code on this computer, so it didn't start its own Claude. Install Claude Code, then start it from the status bar.";
     default: {
       const _exhaustive: never = initial;
       return _exhaustive;

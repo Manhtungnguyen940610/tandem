@@ -1405,3 +1405,83 @@ describe("createIntegrationWizard — the saved setup (#2198)", () => {
     expect(ids).toContain("cc-saved");
   });
 });
+
+describe("createIntegrationWizard — refreshDetected (#2199)", () => {
+  const desktop: ExistingMcpInstall = {
+    target: { kind: "claude-desktop", label: "Claude Desktop", configPath: "/d/config.json" },
+    status: "ok",
+  };
+  const code: ExistingMcpInstall = {
+    target: { kind: "claude-code", label: "Claude Code", configPath: "/h/.claude.json" },
+    status: "missing",
+  };
+
+  /** Detection answers `before` once, then `after` on every later read. */
+  function wizardDetecting(before: ExistingMcpInstall[], after: ExistingMcpInstall[]) {
+    let reads = 0;
+    return createIntegrationWizard({
+      fetchFn: makeFetchStub([
+        {
+          method: "GET",
+          urlMatch: /\/api\/integrations\/existing$/,
+          handler: () => ({ status: 200, body: { installs: reads++ === 0 ? before : after } }),
+        },
+      ]),
+    });
+  }
+
+  it("ticks the newly detected Claude Code card and keeps the user's own choices", async () => {
+    const wizard = wizardDetecting([desktop], [desktop, code]);
+    await wizard.begin();
+    // The user unticked Desktop: that choice survives the re-read.
+    wizard.setPicked([]);
+    const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+    flushSync();
+    expect(fresh.map((i) => i.target.kind)).toEqual(["claude-code"]);
+    expect(wizard.existing).toHaveLength(2);
+    expect(wizard.picked.map((p) => p.config.kind)).toEqual(["claude-code"]);
+  });
+
+  it("ticks only the asked-for kind — a new Desktop install arriving alongside stays unticked", async () => {
+    const desktop2: ExistingMcpInstall = {
+      target: {
+        kind: "claude-desktop",
+        label: "Claude Desktop (Store)",
+        configPath: "/d2/config.json",
+      },
+      status: "ok",
+    };
+    const wizard = wizardDetecting([desktop], [desktop, desktop2, code]);
+    await wizard.begin();
+    wizard.setPicked([]);
+    await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+    expect(wizard.picked.map((p) => p.config.kind)).toEqual(["claude-code"]);
+  });
+
+  it("without pickNewOfKind it ticks nothing", async () => {
+    const wizard = wizardDetecting([desktop], [desktop, code]);
+    await wizard.begin();
+    const before = wizard.picked.map((p) => p.id);
+    await wizard.refreshDetected();
+    expect(wizard.picked.map((p) => p.id)).toEqual(before);
+  });
+
+  it("a card the user already had is not 'new' — an unticked one stays unticked", async () => {
+    const wizard = wizardDetecting([desktop, code], [desktop, code]);
+    await wizard.begin();
+    wizard.setPicked(wizard.picked.filter((p) => p.config.kind !== "claude-code"));
+    const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+    expect(fresh).toEqual([]);
+    expect(wizard.picked.some((p) => p.config.kind === "claude-code")).toBe(false);
+  });
+
+  it("a read that lands after reset() changes nothing", async () => {
+    const wizard = wizardDetecting([desktop], [desktop, code]);
+    await wizard.begin();
+    const pending = wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+    wizard.reset();
+    expect(await pending).toEqual([]);
+    expect(wizard.existing).toEqual([]);
+    expect(wizard.picked).toEqual([]);
+  });
+});

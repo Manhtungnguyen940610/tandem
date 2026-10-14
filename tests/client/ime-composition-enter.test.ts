@@ -92,6 +92,9 @@ function renderChat(onSend: () => boolean) {
       onResumeRemedy: () => {},
       tandemClaudeGreetingLate: null,
       onGreetingAction: () => {},
+      claudeCodeOfferEligible: false,
+      onClaudeCodeOfferSetup: () => {},
+      onClaudeCodeOfferDismiss: () => {},
       aiDisabled: false,
     },
   });
