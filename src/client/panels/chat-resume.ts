@@ -55,6 +55,9 @@ export function chatResume(
     verb: request.from === "idle" ? "resuming" : "starting",
   };
   const inGrace = input.now - request.at < RESUME_GRACE_MS;
+  // The licence refuses the AI (#1521): nothing will start, whatever the
+  // standby says, and Start would be refused. Its own remedy, not "start".
+  if (input.remedy === "ai-off") return { kind: "failed", remedy: "ai-off" };
   // A start under way. `restarting` is the fresh-gated reading; a standby with
   // no remedy is the RAW `restartPending` — one failed status read during a
   // long start must not turn "resuming" into "couldn't start".

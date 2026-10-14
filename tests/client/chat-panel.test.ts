@@ -7,6 +7,7 @@ import { AI_CTA } from "../../src/client/hooks/useAiReadiness.svelte";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
 import type { ChatResume } from "../../src/client/panels/chat-resume";
 import type { ChatMessage } from "../../src/shared/types";
+import { reactiveCell } from "../helpers/reactive-cell.svelte";
 
 function renderChat(messages: ChatMessage[]) {
   return render(ChatPanel, {
@@ -250,28 +251,38 @@ describe("ChatPanel — AI off by licence", () => {
 });
 
 describe("ChatPanel — the resume row (#2196)", () => {
-  function renderWithResume(resume: ChatResume | null, messages: ChatMessage[] = []) {
+  function renderWithResume(
+    resume: ChatResume | null | { value: ChatResume | null },
+    messages: ChatMessage[] = [],
+  ) {
     const onResumeRemedy = vi.fn();
-    const result = render(ChatPanel, {
-      props: {
-        messages,
-        editor: null,
-        activeDocId: null,
-        openDocs: [],
-        capturedAnchor: null,
-        onCapturedAnchorChange: () => {},
-        onSend: () => true,
-        onClear: async () => {},
-        onExport: async () => {},
-        onInsert: () => false,
-        tandemClaudeControl: null,
-        onStartClaude: () => {},
-        onTurnOffClaude: () => {},
-        tandemClaudeResume: resume,
-        onResumeRemedy,
-        aiDisabled: false,
-      },
-    });
+    const cell = resume !== null && "value" in resume ? resume : null;
+    const props = {
+      messages,
+      editor: null,
+      activeDocId: null,
+      openDocs: [],
+      capturedAnchor: null,
+      onCapturedAnchorChange: () => {},
+      onSend: () => true,
+      onClear: async () => {},
+      onExport: async () => {},
+      onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
+      tandemClaudeResume: cell ? null : (resume as ChatResume | null),
+      onResumeRemedy,
+      aiDisabled: false,
+    };
+    // A getter reads the cell, so only this prop is reactive (#2196).
+    if (cell) {
+      Object.defineProperty(props, "tandemClaudeResume", {
+        get: () => cell.value,
+        enumerable: true,
+      });
+    }
+    const result = render(ChatPanel, { props });
     const q = (id: string) => result.container.querySelector<HTMLElement>(`[data-testid='${id}']`);
     return { ...result, q, onResumeRemedy };
   }
@@ -298,6 +309,29 @@ describe("ChatPanel — the resume row (#2196)", () => {
       await tick();
       spy.mockClear();
       await rerender({ tandemClaudeResume: { kind: "failed", remedy: "start" } });
+      await tick();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = orig;
+    }
+  });
+
+  it("does not scroll again when the row is recomputed with nothing changed", async () => {
+    const spy = vi.fn();
+    const orig = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = spy;
+    try {
+      // Only this prop changes, as in App: `rerender` would re-set every prop.
+      const cell = reactiveCell<ChatResume | null>({ kind: "resuming", verb: "starting" });
+      renderWithResume(cell);
+      await tick();
+      spy.mockClear();
+      // A fresh object with the same kind, as every `chatResume` recompute is.
+      cell.value = { kind: "resuming", verb: "starting" };
+      await tick();
+      expect(spy).not.toHaveBeenCalled();
+      // Control: a change of kind still scrolls.
+      cell.value = { kind: "failed", remedy: "start" };
       await tick();
       expect(spy).toHaveBeenCalled();
     } finally {

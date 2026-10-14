@@ -1970,6 +1970,9 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().chip).toBeNull();
       expect(on.get().state).toBe("booting");
+      // The ungated remedy waits too, or the chat panel's rows would offer a
+      // Restart the server answers 403 (#2196).
+      expect(on.get().launcherRemedy).toBeNull();
       expect(refreshLicence).toHaveBeenCalledTimes(1);
 
       // The re-read lands and the licence still admits AI; the launcher still
@@ -1978,6 +1981,7 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().state).toBe("stopped");
       expect(on.get().chip).toBe("restart");
+      expect(on.get().launcherRemedy).toBe("restart");
       expect(refreshLicence).toHaveBeenCalledTimes(1);
     });
 

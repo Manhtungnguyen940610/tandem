@@ -427,7 +427,7 @@ While any standby is set, the supervisor holds a **standby watch** — the same 
 - **A burst makes one spawn:** one start is queued at a time (`messageStartQueued`); later messages only record their owed wake. The queued start counts toward `restartPending`, so the status reads "Starting" from the moment the message lands.
 - **Failures stay visible:** a licence refusal records `unlicensed`; no integration reads as not-configured; a throw from the settings or plan read records `spawn-failed`, because nothing else would.
 - **Shutdown:** the public `stop()` raises `shuttingDown` synchronously, before the lock, so a message start queued ahead of it or behind it starts nothing; `start()` lowers it.
-- **No breaker reset:** a message start does not clear the crash breaker the way a user's Start or relaunch does. A chat is not a decision to retry a Claude that kept crashing, and nothing else bounds how often one arrives.
+- **Not beside a tripped breaker:** a message never starts a Claude whose crash breaker has tripped (a crash loop, then Off). A chat is not a decision to retry a Claude that kept crashing; Start, which resets the breaker, is. The status then omits `startsOnMessage`, so the chat panel promises nothing. (Starting it without resetting the breaker, as #2196 first did, left the breaker tripped under a running child: its next crash got no restart and no diagnosis.)
 - **`startsOnMessage`** rides beside `standby` on `GET /api/launcher/status` (loopback-only) when a message would start Claude — the same three conditions the watch applies. The chat panel's "Claude is resuming…" row (`src/client/panels/chat-resume.ts`) is promised only then, and stops promising 20 s after a send that no start followed.
 
 ### Activation

@@ -138,6 +138,10 @@ const pickup = $derived(
   tandemClaudeResume ? null : chatPickup(messages, Math.max(now, Date.now())),
 );
 const pickupKind = $derived(pickup?.kind ?? null);
+// The primitive, for the scroll effect: `chatResume` returns a new object on
+// every recompute, and an effect reading the object would scroll a reader who
+// scrolled up back down on a change that moved nothing.
+const resumeKind = $derived(tandemClaudeResume?.kind ?? null);
 
 // Tick only while a row is showing in a panel that is not hidden, so the elapsed
 // count moves and the age cap can retire the row. Keyed on the primitive kind, so
@@ -160,7 +164,7 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
-  const kind = tandemClaudeResume?.kind ?? pickupKind;
+  const kind = resumeKind ?? pickupKind;
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;

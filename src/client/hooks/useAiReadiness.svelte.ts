@@ -577,8 +577,10 @@ export interface AiReadiness {
    * `chip`'s decision without its Solo and live-session gates, which hide it
    * whenever any session is live. The chat panel's "couldn't start" row needs
    * the remedy even then, because it is about Tandem's Claude specifically.
-   * `null` while it runs, while a start or restart is under way, and while
-   * the status is unknown or transient.
+   * `"ai-off"` whenever the licence refuses the AI, running or not; otherwise
+   * `null` while it runs, while a start or restart is under way, while the
+   * status is unknown or transient, and while a server `unlicensed` waits on
+   * the client's licence re-read (`staleLicenceStop`).
    */
   readonly launcherRemedy: AiRemedy | null;
   /** How many LIVE MCP clients `/health` counts (`isLiveEntry` +
@@ -1172,7 +1174,7 @@ export function createAiReadiness(deps: {
   const launcherRemedy = $derived<AiRemedy | null>(
     notice !== null
       ? "ai-off"
-      : status === null
+      : status === null || (staleLicenceStop && licenceRereadPending)
         ? null
         : !status.available
           ? isTransientlyUnavailable(status.reason)
