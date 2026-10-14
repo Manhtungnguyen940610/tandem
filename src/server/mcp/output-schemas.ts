@@ -259,6 +259,11 @@ const userActionSchema = z.object({
   author: z.literal("user"),
   type: z.literal("comment"),
   textSnippet: z.string().describe("Current document text at the annotation range (≤100 chars)"),
+  documentId: z
+    .string()
+    .describe(
+      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
+    ),
   edited: z.literal(true).optional().describe("Set when re-surfaced after a user edit"),
   alreadyPushed: alreadyPushedField,
 });
@@ -268,6 +273,11 @@ const userResponseSchema = z.object({
   author: z.literal("claude"),
   status: z.enum(["accepted", "dismissed"]),
   textSnippet: z.string(),
+  documentId: z
+    .string()
+    .describe(
+      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
+    ),
 });
 
 const inboxChatMessageSchema = z.object({
@@ -292,6 +302,11 @@ const inboxUserReplySchema = z.object({
   text: z.string(),
   timestamp: z.number(),
   textSnippet: z.string().describe("Parent comment's anchored text (≤100 chars)"),
+  documentId: z
+    .string()
+    .describe(
+      "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
+    ),
   alreadyPushed: alreadyPushedField,
 });
 
@@ -314,6 +329,12 @@ export const checkInboxOutputShape = {
     .describe("New user replies on comment threads (held in Solo, released on flip to Tandem)"),
   chatMessages: z.array(inboxChatMessageSchema),
   activity: z.object({
+    documentId: z
+      .string()
+      .nullable()
+      .describe(
+        "The document this activity describes: the named one, or on a default poll the active one (null when none is active). The item buckets may come from other documents",
+      ),
     isTyping: z.boolean(),
     cursor: z.number().nullable(),
     lastEdit: z.number().nullable(),

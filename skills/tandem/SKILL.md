@@ -1,6 +1,6 @@
 ---
 name: tandem
-version: 34
+version: 35
 description: >
   Use before the first tandem_* call in a session — including a lone status
   check — or when the user asks about Tandem document editing or iterating on
@@ -231,7 +231,7 @@ message, never "server not running".
 - **`INVALID_PATH`** — The path was refused: a relative path (pass an absolute one), a UNC path, or `tandem_restoreBackup` on an upload or scratchpad, which has no on-disk location.
 - **`EXTERNAL_CONFLICT`** — `tandem_save` refused because the file changed on disk since it was opened, usually from an out-of-band `Edit`/`Write` (see Hard Rule 6). The user resolves it via the editor's Keep/Reload banner; `tandem_open({ force: true })` also clears it, but destructively, and only on the user's say-so — never call it yourself to route around a conflict.
 - **A tool error that begins with one of the two sentences quoted under "Licence refusal", or that carries `-32003` or names `LICENSE_REQUIRED`** — Tandem stopped admitting its AI features mid-session, for a licence reason. Mid-session the error usually arrives as the bare message, with no code, so match on how it begins. Tell the user once, with the same three branches as "Licence refusal" above; when the error is JSON (a `tandem_reply` failing with `Reply failed (403): {…}`), branch on which of the two quoted sentences it contains. Do not edit the file another way, or offer to. While it lasts, suspend the every-2-3-calls inbox poll: make at most one read-mode `tandem_status` per user turn to see whether it has healed, and resume normal polling on the first success. Repeat the explanation only if the message changes. Once the user activates, the next call works again by itself within about a minute; no `/mcp` is needed unless the message asks you to reconnect. A line from Tandem's monitor (`Tandem: …`) or a `license_refused` channel event saying the same thing is this refusal too: tell the user once if you have not already. It is not a wake, and not a reason to poll or arm. If it carries neither quoted sentence (for example `Tandem: LICENSE_REQUIRED`), use the "any other message" branch.
-- **`NO_DOCUMENT`** — No document is open, or the `documentId` you passed doesn't match one. Check `tandem_listDocuments` for what's actually open, and open a file with `tandem_open` when the user's request needs one. The error is not a reason to open something the user didn't ask for. `tandem_checkInbox`, `tandem_reply` and `tandem_open` work with no document open, and the inbox still delivers chat then: when no document resolves (none open, none active, or a `documentId` naming one that isn't open), its `summary` opens with a sentence saying so and the comment, reply and activity fields are empty. So a user can ask you to open a file before any tab exists.
+- **`NO_DOCUMENT`** — No document is open, or the `documentId` you passed doesn't match one. Check `tandem_listDocuments` for what's actually open, and open a file with `tandem_open` when the user's request needs one. The error is not a reason to open something the user didn't ask for. `tandem_checkInbox`, `tandem_reply` and `tandem_open` work with no document open, and the inbox still delivers chat then: when it reads no document (none open, or a `documentId` naming one that isn't open), its `summary` opens with a sentence saying so and the comment, reply and activity fields are empty. Tabs open with none active still returns their comments and replies; only `activity` is empty then. So a user can ask you to open a file before any tab exists.
 
 ## Session Handoff
 
@@ -245,7 +245,7 @@ When starting a new Claude session with Tandem already running:
 
 ## Multi-Document
 
-When multiple documents are open, always pass `documentId` explicitly — omitting it targets the active document, which may have changed since your last call. Use `tandem_listDocuments` to see what's available. Cross-reference by reading both docs via `tandem_getTextContent({ documentId: "..." })` and annotating the relevant one.
+When multiple documents are open, always pass `documentId` explicitly — omitting it targets the active document, which may have changed since your last call. **The one exception is `tandem_checkInbox`: call it with no `documentId`**, which polls every open document. Each comment, response and reply it returns carries its own `documentId`, and the summary names the files when any came from a document other than the active one — pass that item's `documentId` to whatever you call next, because a range from one document applied to another lands on the wrong text. Use `tandem_listDocuments` to see what's available. Cross-reference by reading both docs via `tandem_getTextContent({ documentId: "..." })` and annotating the relevant one.
 
 ## Project Context Discovery
 

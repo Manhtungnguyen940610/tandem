@@ -1108,7 +1108,7 @@ Check for user actions you haven't seen yet -- new comments, chat messages, and 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `documentId` | string | no | Target document ID (defaults to active document) |
+| `documentId` | string | no | Limit the poll to one document. Omit it to poll every open document — the usual call (#2187) |
 
 **Returns:**
 ```json
@@ -1118,11 +1118,12 @@ Check for user actions you haven't seen yet -- new comments, chat messages, and 
   "mode": "tandem",
   "modeProvenance": { "source": "client", "connection": "a1b2c3d4", "at": 1710936000000, "value": "tandem" },
   "storeReadOnly": false,
-  "userActions": [ { ...annotation, "textSnippet": "...", "edited": true, "alreadyPushed": true } ],
-  "userReplies": [ { "id": "r_...", "annotationId": "ann_...", "author": "user", "text": "...", "timestamp": 1710936000000, "textSnippet": "...", "alreadyPushed": true } ],
-  "userResponses": [ { ...annotation, "textSnippet": "..." } ],
+  "userActions": [ { ...annotation, "textSnippet": "...", "documentId": "notes-a1b2c3", "edited": true, "alreadyPushed": true } ],
+  "userReplies": [ { "id": "r_...", "annotationId": "ann_...", "author": "user", "text": "...", "timestamp": 1710936000000, "textSnippet": "...", "documentId": "notes-a1b2c3", "alreadyPushed": true } ],
+  "userResponses": [ { ...annotation, "textSnippet": "...", "documentId": "notes-a1b2c3" } ],
   "chatMessages": [ { "id": "msg_...", "text": "...", "timestamp": 1710936000000 } ],
   "activity": {
+    "documentId": "notes-a1b2c3",
     "isTyping": false,
     "cursor": 142,
     "lastEdit": 1710936000000,
@@ -1132,7 +1133,9 @@ Check for user actions you haven't seen yet -- new comments, chat messages, and 
 }
 ```
 
-**No document open:** the tool never returns `NO_DOCUMENT`. Chat lives in `CTRL_ROOM`, not on a document, so with no active document (or a `documentId` that names no open document) it still returns `chatMessages`, `mode`, `modeProvenance` and `storeReadOnly`, with `userActions` / `userResponses` / `userReplies` empty and every `activity` field `false`/`null`. The `summary` then leads with `No document is open.` (or names the unknown id, or says no document is active while tabs remain open), and carries no advice to call `tandem_open`: Tandem's Claude opens a document only when the user asks. An empty-string `documentId` is treated as omitted. Before this, the tool refused with `NO_DOCUMENT` ahead of the chat read, so a chat sent with every tab closed never reached the supervisor's Claude.
+**Every open document, by default (#2187):** with no `documentId` the poll reads every open document, the active one first. Every `userActions`, `userResponses` and `userReplies` item carries the `documentId` it belongs to, so the same imported Word comment open in two files arrives twice, told apart by it. Act on an item by passing that `documentId`: a follow-up without one targets the active document, and a range from one document applied to another lands on the wrong text. When any item comes from a document other than the active one, the `summary` names those files and says so. `activity` describes only the active document, which `activity.documentId` names (`null` when none is active). A document whose pass throws is skipped, named by id in the `summary` and logged to stderr (never its error text in the response, which can carry note content), and the other documents and the chat are still returned. Passing a `documentId` narrows the poll to that one document, with the pre-#2187 behaviour: a throw reaches the error boundary with nothing read. Before #2187 a default poll read only the active document, so a comment on a background tab came back as `No new actions.`, which nothing distinguished from a quiet poll.
+
+**No document open:** the tool never returns `NO_DOCUMENT`. Chat lives in `CTRL_ROOM`, not on a document, so with no document open (or a `documentId` that names no open document) it still returns `chatMessages`, `mode`, `modeProvenance` and `storeReadOnly`, with `userActions` / `userResponses` / `userReplies` empty and every `activity` field `false`/`null`. The `summary` then leads with `No document is open.` (or names the unknown id), and carries no advice to call `tandem_open`: Tandem's Claude opens a document only when the user asks. An empty-string `documentId` is treated as omitted. Before this, the tool refused with `NO_DOCUMENT` ahead of the chat read, so a chat sent with every tab closed never reached the supervisor's Claude.
 
 **Notes:**
 - Each annotation is surfaced only once -- subsequent calls return only new items (edited annotations re-surface with `edited: true`).

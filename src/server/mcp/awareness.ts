@@ -406,25 +406,30 @@ export function finalizeClaudeChatMessage(id: string): void {
 }
 
 /**
- * Leads `tandem_checkInbox`'s summary when the poll resolved to no document.
- * Deliberately carries no "call tandem_open" advice: opening a document is
- * something Claude does only when the user asks.
+ * Leads `tandem_checkInbox`'s summary when the poll read no document: a named
+ * one that is not open, or nothing open at all. Deliberately carries no "call
+ * tandem_open" advice: opening a document is something Claude does only when
+ * the user asks. (A default poll with tabs open but none ACTIVE is not here
+ * any more — #2187 made it read every open document.)
  */
 function noDocumentInboxNote(requestedId: string | undefined): string {
-  if (requestedId !== undefined) {
-    return `Document ${requestedId} is not open (tandem_listDocuments lists the open ones), so only chat is shown.`;
-  }
-  // No id and no store means no ACTIVE document, which is not quite "none
-  // open": the active id can be unset while tabs remain.
-  return getOpenDocs().size === 0
-    ? "No document is open."
-    : "No document is active (tandem_listDocuments lists the open ones), so only chat is shown.";
+  return requestedId !== undefined
+    ? `Document ${requestedId} is not open (tandem_listDocuments lists the open ones), so only chat is shown.`
+    : "No document is open.";
+}
+
+/** A file name for the summary, from either separator (`path.basename` on POSIX would not split `\`). */
+function displayName(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/");
+  return normalized.slice(normalized.lastIndexOf("/") + 1) || filePath;
 }
 
 type DocumentStore = NonNullable<ReturnType<typeof getDocumentStore>>;
 
 /** The `activity` object `tandem_checkInbox` returns. */
 interface InboxActivity {
+  /** The document `activity` describes: the active one on a default poll. */
+  documentId: string | null;
   isTyping: boolean;
   cursor: number | null;
   lastEdit: number | null;
@@ -439,13 +444,14 @@ interface DocumentInbox {
   activity: InboxActivity;
 }
 
-/** The document-scoped half of a `tandem_checkInbox` pass with nothing open. */
+/** A `tandem_checkInbox` document pass that read nothing. */
 function emptyDocumentInbox(): DocumentInbox {
   return {
     userActions: [],
     userResponses: [],
     userReplies: [],
     activity: {
+      documentId: null,
       isTyping: false,
       cursor: null,
       lastEdit: null,
@@ -457,12 +463,45 @@ function emptyDocumentInbox(): DocumentInbox {
 
 /**
  * The document-scoped half of a `tandem_checkInbox` pass: the three annotation
- * buckets and `activity`, all read from `store`. Chat is NOT here — it lives in
- * CTRL_ROOM and is read by the handler whether or not a document is open.
+ * buckets and, when `withActivity`, `activity` — all read from `store`. Chat is
+ * NOT here — it lives in CTRL_ROOM and is read by the handler whether or not a
+ * document is open.
+ *
+ * `withActivity` is false for the background documents of a default poll
+ * (#2187): only the active document's activity is returned, so reading the
+ * others' would be discarded work and one more thing that can throw.
  */
-function collectDocumentInbox(store: DocumentStore, modeState: ModeState): DocumentInbox {
+function collectDocumentInbox(
+  store: DocumentStore,
+  modeState: ModeState,
+  withActivity: boolean,
+): DocumentInbox {
   const allAnnotations = store.listAnnotations();
+  // Nothing to surface and no activity wanted: skip the full-text walk. A
+  // default poll reaches every open document, most of them quiet.
+  if (!withActivity && allAnnotations.length === 0) return emptyDocumentInbox();
+
+  // Every read that can throw happens HERE, before the collectors below stamp
+  // a single ledger entry: the annotations above, the awareness record, the
+  // flat text and the reply threads. (The refresh inside
+  // `processInboxAnnotations` also precedes its stamps.) The handler isolates
+  // a throwing background document on a default poll (#2187), and a throw
+  // after a stamp would mark that document's items delivered while the poll
+  // discarded them — lost for the server run, with the summary saying only
+  // that the document could not be read.
+  const awareness = withActivity ? store.getUserAwareness() : null;
   const fullText = store.getText();
+  // The same reads `collectInboxUserReplies` makes, through the same gate
+  // (`channelVisibleReplies` loads a thread only for a Claude-facing comment),
+  // taken up front and served from memory below.
+  const repliesByParent = new Map<string, AnnotationReply[]>();
+  for (const ann of allAnnotations) {
+    channelVisibleReplies(ann, (id) => {
+      const replies = store.listReplies(id);
+      repliesByParent.set(id, replies);
+      return replies;
+    });
+  }
 
   // Refresh only unsurfaced annotations, in the one batch
   // `YDocStore.refreshAnnotations` owns the transaction for (its docblock
@@ -498,15 +537,19 @@ function collectDocumentInbox(store: DocumentStore, modeState: ModeState): Docum
   const userReplies = collectInboxUserReplies(
     allAnnotations,
     fullText,
-    (id) => store.listReplies(id),
+    (id) => repliesByParent.get(id) ?? [],
     replySurfacedIds,
     pollCtx,
   );
 
+  if (awareness === null) {
+    return { userActions, userResponses, userReplies, activity: emptyDocumentInbox().activity };
+  }
+
   // Current user activity. `getUserAwareness()` is typed rather than a
   // `getMap` returning the raw Y.Map — a map accessor would be the `ydoc`
   // hatch under a new name.
-  const { selection, activity } = store.getUserAwareness();
+  const { selection, activity } = awareness;
 
   const hasSelection = selection && selection.from !== selection.to;
   const selectedText = hasSelection ? safeSlice(fullText, selection!.from, selection!.to) : null;
@@ -527,6 +570,7 @@ function collectDocumentInbox(store: DocumentStore, modeState: ModeState): Docum
     userResponses,
     userReplies,
     activity: {
+      documentId: store.documentId,
       isTyping: activity?.isTyping ?? false,
       cursor: activity?.cursor ?? null,
       lastEdit: activity?.lastEdit ?? null,
@@ -602,12 +646,14 @@ export function registerAwarenessTools(server: McpServer): void {
     "tandem_checkInbox",
     {
       description:
-        'Return user actions not yet returned by a previous poll — new comments, chat messages, and replies to your annotations — plus the current collaboration `mode` and `activity`. Works with no document open: chat and `mode` are still returned, and the document fields are empty. This is the authoritative delivery path: real-time push cannot be confirmed to have reached a client, so nothing here is suppressed on the strength of a push, and steady polling is the only reliable way to see user activity. Repeat calls de-duplicate against what was already returned, so frequent polling never double-reports. An item carries `alreadyPushed: true` when it was also emitted as a real-time event; that describes the server\'s side only. Does not return user notes (`type: "note"`), nor any record whose stored `audience` is not outbound (#1619/#1710) — user highlights are always private, so they never appear here at all. `activity.selectedText` is the most recent non-empty selection, not necessarily the current one — it is not cleared when focus leaves the editor — and `activity.selectionAt` is when the user last made it. For a document not shown in an editor nothing updates the record, so after an edit `selectedText` can be sliced from stale offsets (#1997).',
+        'Return user actions not yet returned by a previous poll — new comments, chat messages, and replies to your annotations — plus the current collaboration `mode` and `activity`. Call it with no `documentId` to cover every open document: each comment, response and reply carries its `documentId` (the same imported comment open in two files arrives twice, told apart by it), so pass that id when acting on an item, because a call without one targets the active document. `activity` describes only the active document (`activity.documentId`). Works with no document open: chat and `mode` are still returned, and the document fields are empty. This is the authoritative delivery path: real-time push cannot be confirmed to have reached a client, so nothing here is suppressed on the strength of a push, and steady polling is the only reliable way to see user activity. Repeat calls de-duplicate against what was already returned, so frequent polling never double-reports. An item carries `alreadyPushed: true` when it was also emitted as a real-time event; that describes the server\'s side only. Does not return user notes (`type: "note"`), nor any record whose stored `audience` is not outbound (#1619/#1710) — user highlights are always private, so they never appear here at all. `activity.selectedText` is the most recent non-empty selection, not necessarily the current one — it is not cleared when focus leaves the editor — and `activity.selectionAt` is when the user last made it. For a document not shown in an editor nothing updates the record, so after an edit `selectedText` can be sliced from stale offsets (#1997).',
       inputSchema: {
         documentId: z
           .string()
           .optional()
-          .describe("Target document ID (defaults to active document)"),
+          .describe(
+            "Limit the poll to one document. Omit it to poll every open document — the usual call",
+          ),
       },
       outputSchema: checkInboxOutputShape,
     },
@@ -623,14 +669,12 @@ export function registerAwarenessTools(server: McpServer): void {
         // `""` is treated as omitted: `getCurrentDoc("")` would otherwise
         // resolve to no document even with one active.
         const requestedId = documentId || undefined;
-        const store = getDocumentStore(requestedId);
         // No document is NOT an error here. Chat lives in CTRL_ROOM, not on a
         // document, and returning NO_DOCUMENT is how a chat sent with every tab
         // closed went unanswered: the supervisor's Claude polled, got the
         // error, and never reached the chat loop. That held for an explicit id
-        // naming a closed tab too (the skill says to pass one when several are
-        // open). So the poll always runs; with no store the document buckets
-        // are empty and the summary says why.
+        // naming a closed tab too. So the poll always runs; with nothing read
+        // the document buckets are empty and the summary says why.
 
         // WS-A2: single live read of the three-state mode, used both to gate
         // the Solo privacy hold (`hideFromAI` in the surfacer) and to report
@@ -639,24 +683,74 @@ export function registerAwarenessTools(server: McpServer): void {
         const modeState = readModeState();
 
         // Every document-scoped field — the three annotation buckets and
-        // `activity` — comes from the store. With no document open they are
-        // empty, so nothing annotation-derived (notes, private records,
-        // Solo-held content) can reach Claude on that pass.
-        const { userActions, userResponses, userReplies, activity } = store
-          ? collectDocumentInbox(store, modeState)
-          : emptyDocumentInbox();
+        // `activity` — comes from `collectDocumentInbox`, whose per-record
+        // filters (notes, private records, the Solo hold) are the same for
+        // every document it reads.
+        const userActions: InboxUserAction[] = [];
+        const userResponses: InboxUserResponse[] = [];
+        const userReplies: InboxUserReply[] = [];
+        let activity = emptyDocumentInbox().activity;
+        const addBuckets = (inbox: DocumentInbox): void => {
+          userActions.push(...inbox.userActions);
+          userResponses.push(...inbox.userResponses);
+          userReplies.push(...inbox.userReplies);
+        };
+        let readAnyDocument = false;
+        let activeId: string | null = null;
+        const unreadable: string[] = [];
+
+        if (requestedId !== undefined) {
+          // A named document: one store, and a throw reaches the error
+          // boundary with nothing read, as before #2187.
+          const store = getDocumentStore(requestedId);
+          if (store) {
+            const inbox = collectDocumentInbox(store, modeState, true);
+            addBuckets(inbox);
+            activity = inbox.activity;
+            readAnyDocument = true;
+          }
+        } else {
+          // #2187: a default poll reads EVERY open document. It used to read
+          // only the active one, so a comment on a background tab came back as
+          // "No new actions." — indistinguishable from a quiet poll — and the
+          // supervisor's wake for it landed on an empty inbox. The active
+          // document goes first and is read once; it alone supplies `activity`.
+          activeId = getCurrentDoc()?.id ?? null;
+          const openIds = [...getOpenDocs().keys()];
+          const order =
+            activeId !== null && openIds.includes(activeId)
+              ? [activeId, ...openIds.filter((id) => id !== activeId)]
+              : openIds;
+          for (const id of order) {
+            const store = getDocumentStore(id);
+            if (!store) continue;
+            readAnyDocument = true;
+            // Isolated, so one document that cannot be read no longer takes
+            // every other document's items AND the chat down with it. The
+            // summary names the document id only: the error can carry record
+            // text, notes included (ADR-027), so it goes to stderr alone.
+            try {
+              const inbox = collectDocumentInbox(store, modeState, id === activeId);
+              addBuckets(inbox);
+              if (id === activeId) activity = inbox.activity;
+            } catch (err) {
+              console.error(`[Tandem] tandem_checkInbox could not read document ${id}:`, err);
+              unreadable.push(id);
+            }
+          }
+        }
 
         // The join closes HERE, directly above the chat loop — a separate fact
         // from the stamp above, kept apart because it is a claim about the
-        // USER's message. Below the document pass on purpose: a throw from
-        // `refreshAnnotations`, `listReplies` or `getUserAwareness` reaches the
-        // error boundary with nothing read, and must leave the round open. The
-        // round is process-wide, not per document, so this still closes one
-        // whose forward was an annotation on any document other than the one
-        // polled (closed, or open but not named). That predates the
-        // no-document pass: a poll naming a different open document always
-        // closed it the same way. `polled` was never proof that that
-        // annotation was delivered.
+        // USER's message. Below the document pass on purpose: on a named poll a
+        // throw from `refreshAnnotations`, `listReplies` or `getUserAwareness`
+        // reaches the error boundary with nothing read, and must leave the
+        // round open. The round is process-wide, not per document, so this
+        // still closes one whose forward was an annotation on a document that
+        // was not read (closed, not named, or isolated as unreadable on a
+        // default poll). That predates #2187: a poll naming a different open
+        // document always closed it the same way, and the chat below IS read.
+        // `polled` was never proof that that annotation was delivered.
         resolveDeliveryRound();
 
         // Bucket 3: unread chat messages from CTRL_ROOM
@@ -716,10 +810,34 @@ export function registerAwarenessTools(server: McpServer): void {
           );
           parts.push(CHAT_ACK_DIRECTIVE);
         }
-        const actions = parts.length > 0 ? parts.join(". ") + "." : "No new actions.";
+        let actions = parts.length > 0 ? parts.join(". ") + "." : "No new actions.";
+        // #2187: items from a background document are exactly the ones a
+        // follow-up call without `documentId` would aim at the WRONG document —
+        // a range-keyed write lands in the active one at another document's
+        // offsets. Named by file so no tandem_listDocuments round trip is needed.
+        const elsewhere = new Set(
+          [...userActions, ...userResponses, ...userReplies]
+            .map((item) => item.documentId)
+            .filter((id) => id !== activeId),
+        );
+        if (requestedId === undefined && elsewhere.size > 0) {
+          const openDocs = getOpenDocs();
+          const names = [...elsewhere].map((id) => {
+            const doc = openDocs.get(id);
+            return doc ? displayName(doc.filePath) : id;
+          });
+          actions +=
+            ` Some items are from ${activeId === null ? "open documents (none is active)" : "documents other than the active one"}: ${names.join(", ")}.` +
+            " Pass each item's documentId when acting on it.";
+        }
+        if (unreadable.length > 0) {
+          actions += ` Could not read ${unreadable.length === 1 ? "document" : "documents"} ${unreadable.join(", ")}; ${unreadable.length === 1 ? "its" : "their"} items are missing from this poll (the error is in Tandem's log).`;
+        }
         // Leads, so a model reading only the summary knows why the document
         // buckets are empty. Not counted in `hasNew`: it is a state, not an ask.
-        const summary = store ? actions : `${noDocumentInboxNote(requestedId)} ${actions}`;
+        const summary = readAnyDocument
+          ? actions
+          : `${noDocumentInboxNote(requestedId)} ${actions}`;
 
         const hasNew =
           userActions.length > 0 ||
@@ -869,7 +987,7 @@ export function processInboxAnnotations(
   ctx: InboxPollContext,
 ): {
   userActions: Array<InboxUserAction>;
-  userResponses: Array<Annotation & { textSnippet: string }>;
+  userResponses: Array<InboxUserResponse>;
 } {
   // Select first, refresh once. The two halves are separable because the
   // selection reads only the pre-refresh records and a stable ledger — a refresh
@@ -925,10 +1043,10 @@ function processUnsurfacedInboxAnnotations(
   ctx: InboxPollContext,
 ): {
   userActions: Array<InboxUserAction>;
-  userResponses: Array<Annotation & { textSnippet: string }>;
+  userResponses: Array<InboxUserResponse>;
 } {
   const userActions: Array<InboxUserAction> = [];
-  const userResponses: Array<Annotation & { textSnippet: string }> = [];
+  const userResponses: Array<InboxUserResponse> = [];
 
   for (const ann of unsurfaced) {
     // WS-A2 Solo hold — the gate-before-ledger. A held user record must be
@@ -1005,6 +1123,7 @@ function processUnsurfacedInboxAnnotations(
       userActions.push({
         ...ann,
         textSnippet: snippet,
+        documentId: ctx.documentId,
         ...(edited ? { edited: true } : {}),
         ...(ctx.wasChannelEmitted(channelKey) ? { alreadyPushed: true } : {}),
       });
@@ -1018,7 +1137,7 @@ function processUnsurfacedInboxAnnotations(
       // a Claude dismiss was indistinguishable from one.
       ann.resolvedBy !== "claude"
     ) {
-      userResponses.push({ ...ann, textSnippet: snippet });
+      userResponses.push({ ...ann, textSnippet: snippet, documentId: ctx.documentId });
       surfaced.set(key, ann.editedAt ?? 0);
     }
   }
@@ -1079,6 +1198,8 @@ export interface InboxPollContext {
  */
 export type InboxUserAction = Annotation & {
   textSnippet: string;
+  /** The document this item belongs to (#2187: a default poll spans every open one). */
+  documentId: string;
   /** Set when re-surfaced after a user edit. Never `false` — omitted instead. */
   edited?: true;
   /** Also emitted as a channel event. A hint, not proof of delivery. */
@@ -1092,9 +1213,14 @@ export interface InboxUserReply {
   text: string;
   timestamp: number;
   textSnippet: string;
+  /** The document this item belongs to (#2187). */
+  documentId: string;
   /** Also emitted as a channel event. A hint, not proof of delivery. */
   alreadyPushed?: true;
 }
+
+/** A user accept/dismiss in the checkInbox `userResponses` bucket. */
+export type InboxUserResponse = Annotation & { textSnippet: string; documentId: string };
 
 /**
  * WS-A2: collect NEW user replies for the checkInbox userReplies bucket — the
@@ -1136,6 +1262,7 @@ export function collectInboxUserReplies(
         text: reply.text,
         timestamp: reply.timestamp,
         textSnippet: snippet,
+        documentId: ctx.documentId,
         ...(ctx.wasChannelEmitted(reply.id) ? { alreadyPushed: true } : {}),
       });
       replySurfaced.add(ledgerKey(ctx.documentId, reply.id));
