@@ -107,6 +107,13 @@ export function pushSupportNote(
   return targetPushSupport(kind) === "none" ? NO_PUSH_TRANSPORT : null;
 }
 
+/** The done screen's sign-in step (#2199): Claude Code runs but has never been
+ * signed in. "Open a new terminal" rather than a path: the installer adds
+ * `~/.local/bin` to the PATH of terminals opened after it, and a typed path
+ * differs per shell. */
+export const TANDEM_CLAUDE_SIGN_IN_LINE =
+  "One more step: sign in to Claude Code. Open a new terminal, run claude, and sign in when it asks — you can close the terminal once you're signed in. Then choose Check sign-in.";
+
 /** Readiness's live view of Tandem's Claude, for the done screen's line. */
 export interface TandemClaudeLive {
   running: boolean;
@@ -152,6 +159,11 @@ export function tandemClaudeDoneCopy(
   if (live?.running) {
     return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there.";
   }
+  // Next, whatever the Apply answered (#2199): a Claude Code that runs but is
+  // not signed in is the one thing still in the way, and the step is the
+  // user's. Ahead of the switch, so an `other-ai` or `held` answer that a
+  // later Start overtook does not keep its stale line.
+  if (live?.remedy === "sign-in") return TANDEM_CLAUDE_SIGN_IN_LINE;
   if (initial === "starting" || initial === "running") {
     if (live?.standby) return heldLine();
     if (live?.remedy && live.remedy !== "start") {
@@ -168,6 +180,8 @@ export function tandemClaudeDoneCopy(
       return "Tandem's AI features are off, so it didn't start its own Claude. See Settings → License.";
     case "not-configured":
       return "Tandem couldn't find the Claude Code setup it just saved, so it didn't start its own Claude. Try running setup again.";
+    case "cli-unusable":
+      return "Tandem couldn't find Claude Code on this computer, so it didn't start its own Claude. Install Claude Code, then start it from the status bar.";
     default: {
       const _exhaustive: never = initial;
       return _exhaustive;

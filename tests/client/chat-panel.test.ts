@@ -30,6 +30,9 @@ function renderChat(messages: ChatMessage[]) {
       onResumeRemedy: () => {},
       tandemClaudeGreetingLate: null,
       onGreetingAction: () => {},
+      claudeCodeOfferEligible: false,
+      onClaudeCodeOfferSetup: () => {},
+      onClaudeCodeOfferDismiss: () => {},
     },
   });
 }
@@ -165,6 +168,9 @@ describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () =>
         onResumeRemedy: () => {},
         tandemClaudeGreetingLate: null,
         onGreetingAction: () => {},
+        claudeCodeOfferEligible: false,
+        onClaudeCodeOfferSetup: () => {},
+        onClaudeCodeOfferDismiss: () => {},
       },
     });
     const btn = result.container.querySelector<HTMLButtonElement>(
@@ -216,6 +222,9 @@ describe("ChatPanel — AI off by licence", () => {
         onResumeRemedy: () => {},
         tandemClaudeGreetingLate: null,
         onGreetingAction: () => {},
+        claudeCodeOfferEligible: false,
+        onClaudeCodeOfferSetup: () => {},
+        onClaudeCodeOfferDismiss: () => {},
         tandemClaudeControl: null,
         onStartClaude: () => {},
         onTurnOffClaude: () => {},
@@ -278,6 +287,9 @@ describe("ChatPanel — the resume row (#2196)", () => {
         onResumeRemedy,
         tandemClaudeGreetingLate: null,
         onGreetingAction: () => {},
+        claudeCodeOfferEligible: false,
+        onClaudeCodeOfferSetup: () => {},
+        onClaudeCodeOfferDismiss: () => {},
         aiDisabled: false,
       },
     });
@@ -360,6 +372,9 @@ describe("ChatPanel — the 'hasn't said hello' note (#2197)", () => {
         onResumeRemedy: () => {},
         tandemClaudeGreetingLate: greeting,
         onGreetingAction,
+        claudeCodeOfferEligible: false,
+        onClaudeCodeOfferSetup: () => {},
+        onClaudeCodeOfferDismiss: () => {},
         aiDisabled: false,
       },
     });

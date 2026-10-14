@@ -124,6 +124,7 @@ import {
   sendNoteToClaude as marginSendNoteToClaude,
 } from "./panels/annotation-actions";
 import { motionOff } from "./panels/cardMotion";
+import { claudeCodeOfferEligible } from "./panels/chat-claude-code-offer";
 import { exportChatMarkdown } from "./panels/chat-export";
 import { type GreetingAction, greetingNoteAction } from "./panels/chat-greeting";
 import { insertChatMarkdown } from "./panels/chat-insert";
@@ -912,11 +913,61 @@ function closeIntegrationWizard(): void {
     markClosedThisLaunch();
   }
   manuallyReopened = false;
+  wizardFocusClaudeCodeOffer = false;
   // Re-read: a successful Apply or Keep may have just ended the walkthrough on
   // the server, and a later Settings → Reopen must not show its copy again.
   // Only a walkthrough can change the answer this way.
   if (firstRun.walkthrough) void firstRun.refetch();
 }
+
+// --- The chat panel's offer to set up Tandem's own Claude (#2199) -------------
+/** "Not now" holds until the next server launch, keyed like the wizard's
+ * closed-for-launch (`launchId`; page memory for an older server). */
+const CLAUDE_CODE_OFFER_DISMISSED_KEY = "tandem:claude-code-offer-dismissed";
+let claudeCodeOfferDismissedFor = $state<string | null>(readClaudeCodeOfferDismissed());
+let claudeCodeOfferDismissedThisPage = $state(false);
+/** The wizard was opened from the offer: it brings its own offer into view. */
+let wizardFocusClaudeCodeOffer = $state(false);
+
+function readClaudeCodeOfferDismissed(): string | null {
+  try {
+    return localStorage.getItem(CLAUDE_CODE_OFFER_DISMISSED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function dismissClaudeCodeOffer(): void {
+  const launch = firstRun.launchId;
+  if (launch === null) {
+    claudeCodeOfferDismissedThisPage = true;
+    return;
+  }
+  claudeCodeOfferDismissedFor = launch;
+  try {
+    localStorage.setItem(CLAUDE_CODE_OFFER_DISMISSED_KEY, launch);
+  } catch {
+    claudeCodeOfferDismissedThisPage = true;
+  }
+}
+
+function openWizardAtClaudeCodeOffer(): void {
+  window.dispatchEvent(
+    new CustomEvent("tandem:open-integration-wizard", { detail: { focus: "claude-code-offer" } }),
+  );
+}
+
+const claudeCodeOfferOk = $derived(
+  claudeCodeOfferEligible({
+    launcherNotConfigured: aiReadiness.launcherNotConfigured,
+    pushAttached: aiReadiness.pushDelivery === "attached",
+    aiOff: licenseStore.ui.aiOff,
+    solo: modeState.tandemMode === "solo",
+    dismissed:
+      claudeCodeOfferDismissedThisPage ||
+      (firstRun.launchId !== null && claudeCodeOfferDismissedFor === firstRun.launchId),
+  }),
+);
 
 /** Keep this setup succeeded (#2198). Also dismiss the first-run rule, or a
  * user with nothing set up would match it on the next launch. */
@@ -945,6 +996,9 @@ $effect(() => {
     if (ev.key === WIZARD_CLOSED_LAUNCH_KEY) {
       wizardClosedForLaunch = ev.newValue;
     }
+    if (ev.key === CLAUDE_CODE_OFFER_DISMISSED_KEY) {
+      claudeCodeOfferDismissedFor = ev.newValue;
+    }
   };
   window.addEventListener("storage", onStorage);
   return () => window.removeEventListener("storage", onStorage);
@@ -953,8 +1007,12 @@ $effect(() => {
 // SettingsClaudeCodeTab dispatches this when the user clicks "Reopen wizard".
 // Listening here avoids threading another callback through every Settings tab.
 $effect(() => {
-  const onOpen = () => {
+  const onOpen = (ev: Event) => {
     manuallyReopened = true;
+    // Only the chat panel's offer asks for this (#2199); any other reopen
+    // clears it.
+    wizardFocusClaudeCodeOffer =
+      (ev as CustomEvent<{ focus?: string } | null>).detail?.focus === "claude-code-offer";
     settingsModalOpen = false;
     // Re-fetch first-run state so a reopen reflects any concurrent
     // persist from another tab / CLI.
@@ -2797,6 +2855,9 @@ const shouldShowModelPicker = $derived(
             {onResumeRemedy}
             tandemClaudeGreetingLate={greetingAction}
             {onGreetingAction}
+            claudeCodeOfferEligible={claudeCodeOfferOk}
+            onClaudeCodeOfferSetup={openWizardAtClaudeCodeOffer}
+            onClaudeCodeOfferDismiss={dismissClaudeCodeOffer}
             visible={chatVisible}
             aiDisabled={licenseStore.ui.aiOff}
           />
@@ -2921,6 +2982,8 @@ const shouldShowModelPicker = $derived(
         }}
         {walkthroughVersion}
         {onWalkthroughKept}
+        focusClaudeCodeOffer={wizardFocusClaudeCodeOffer}
+        onLauncherRemedy={onResumeRemedy}
       />
     {/if}
 

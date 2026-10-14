@@ -45,6 +45,9 @@ function renderChat(messages: ChatMessage[], visible: boolean | "omit" = true) {
       onResumeRemedy: () => {},
       tandemClaudeGreetingLate: null,
       onGreetingAction: () => {},
+      claudeCodeOfferEligible: false,
+      onClaudeCodeOfferSetup: () => {},
+      onClaudeCodeOfferDismiss: () => {},
       aiDisabled: false,
     },
   });

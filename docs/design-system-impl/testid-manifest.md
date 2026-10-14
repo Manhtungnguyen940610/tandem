@@ -163,6 +163,10 @@ more lines in `__snapshots__/testid-set.snap.txt`.
 - `chat-tandem-claude-resume-remedy` — that row's remedy button
 - `chat-greeting-late` — "Tandem's Claude hasn't said hello" note, when the one-time greeting did not reach the chat (#2197; `data-action` is `relaunch` or the stopped launcher's `AiChip`); below the resume row, replaces the pickup row
 - `chat-greeting-late-action` — that note's button
+- `chat-claude-code-offer` — offer to set up Tandem's own Claude (#2199), with `-setup` (opens the
+  wizard at its offer) and `-dismiss` ("Not now", until the next server launch); only when the
+  launcher has no Claude Code setup and nothing is pushed to, on an empty chat or a message waiting
+  past the stall threshold
 - `clear-chat-btn`, `held-banner`, `store-readonly-banner`,
   `store-readonly-dismiss`, `peek-strip-{*}`,
   `panel-edge-collapse-{*}` (resize-handle selectors synthesized — see Known
@@ -291,6 +295,11 @@ shipped and were removed:
   set up), `integration-wizard-keep-error`, `integration-wizard-start-mode` (wraps the start
   choice, whose radios keep their `settings-modal-tandem-claude-start-*` ids) — only while the
   walkthrough is owed
+- The Claude Code offer for a Claude Desktop setup (#2199):
+  `integration-wizard-claude-code-offer` (carries `data-offer-phase` `idle` / `installed` /
+  `not-detected`) with `-install`, `-error`, `-installed` and `-recheck` — only beside a detected
+  Claude Desktop with no Claude Code; `integration-wizard-check-sign-in` on the done screen, only
+  while the launcher status says sign-in
 - Start at login (#1463): `integration-wizard-autostart{,-toggle,-error}` — desktop only, and
   hidden entirely when the OS reports no tray, so absence is not a regression signal on its own.
 - Per-target delivery honesty (#1299): `integration-wizard-push-support-{*}` —

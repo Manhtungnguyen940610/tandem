@@ -161,6 +161,9 @@ function makeSupervisor(): Supervisor {
   const sup = createSupervisor({
     integrationsBase: baseDir,
     probeCliUsable: () => true,
+    // Spawn is mocked; the command only has to resolve (#2199), whatever the
+    // host has installed.
+    resolveClaudeCommand: () => process.execPath,
     restartBackoffsMs: [0],
     // Both fan-out seams faked: the defaults subscribe to the REAL queue, and
     // a supervisor left armed would leak a subscription into the next test.

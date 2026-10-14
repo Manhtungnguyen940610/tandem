@@ -142,18 +142,21 @@ export function isTransientlyUnavailable(reason: LauncherUnavailableReason | und
  * Scrubbed `lastError` enum. Verbose error strings stay server-side.
  *
  * `binary-not-found` is about the **reaper**, not the Claude CLI — a broken
- * Tandem install. `cli-unusable` is the Claude CLI one, and it is a strictly
- * more specific `circuit-open`: the breaker tripped *and* a filesystem probe
- * says the CLI is absent, or present as an unstartable Windows shim. Both of
- * those have the same remedy (install/repair it), which is why one member
- * covers them; `circuit-open` keeps its literal meaning of "it crash-looped
- * and the CLI itself is fine", which is what routes the user to a restart
- * rather than to the integration wizard.
+ * Tandem install. `cli-unusable` is the Claude CLI one: no Claude Code
+ * program the launcher can start was found — absent, or present only as an
+ * unstartable Windows shim. Since #2199 the launcher resolves its command
+ * before every start (`resolveClaudeLaunch`) and spawns nothing when it finds
+ * none, so this is usually recorded with no crash and no breaker; it is also
+ * still the more specific reading of a tripped breaker whose probe finds the
+ * CLI gone. Both have the same remedy (install/repair it), which is why one
+ * member covers them; `circuit-open` keeps its literal meaning of "it
+ * crash-looped and the CLI itself is fine", which is what routes the user to a
+ * restart rather than to the integration wizard.
  *
- * The probe runs once when the breaker trips, so this is a snapshot: a CLI
- * installed afterwards will not update it. That is acceptable because the
- * supervisor spawns from the PATH the *process* started with, so such a user
- * needs a Tandem restart regardless of what the enum says.
+ * A CLI installed afterwards does not clear it on its own, but needs no Tandem
+ * restart either: the next Start resolves the command afresh, the native
+ * install location (`~/.local/bin`) included, which the PATH this process
+ * started with never contains right after an install.
  *
  * `wake-delivery-failed` (#1868): the supervisor ended three successive
  * children in a row because each stopped accepting turns on stdin, with no
@@ -385,6 +388,9 @@ export const LAUNCHER_ERROR_PATH_REJECTED = "PATH_REJECTED";
 export const LAUNCHER_ERROR_IN_PROGRESS = "LAUNCHER_IN_PROGRESS";
 export const LAUNCHER_ERROR_NOT_AVAILABLE = "LAUNCHER_NOT_AVAILABLE";
 export const LAUNCHER_ERROR_NO_INTEGRATION = "NO_CLAUDE_INTEGRATION";
+/** A relaunch / start-fresh / Start found no Claude Code program it can start
+ * (#2199) and spawned nothing, leaving a running Claude alone. */
+export const LAUNCHER_ERROR_CLI_UNUSABLE = "CLAUDE_CLI_UNUSABLE";
 /** The reaper binary is missing from the install — the supervisor cannot spawn
  * Claude. Stable code so the UI can show a "reinstall Tandem" hint instead of a
  * raw filesystem path. */
@@ -598,6 +604,8 @@ export const GREETING_REPLY_WINDOW_MS = 60_000;
  *   - `other-ai` — another AI session is attached ("Not if another AI is on").
  *   - `refused` — the licence refuses the AI.
  *   - `not-configured` — the launcher found no usable claude-code entry.
+ *   - `cli-unusable` — the entry is there, but no Claude Code program the
+ *     launcher can start was found (#2199); the status reads `cli-unusable`.
  *   - `unknown` — no answer in time, or no launcher in this process yet.
  */
 export const TANDEM_CLAUDE_AFTER_SETUP = [
@@ -607,6 +615,7 @@ export const TANDEM_CLAUDE_AFTER_SETUP = [
   "other-ai",
   "refused",
   "not-configured",
+  "cli-unusable",
   "unknown",
 ] as const;
 export type TandemClaudeAfterSetup = (typeof TANDEM_CLAUDE_AFTER_SETUP)[number];

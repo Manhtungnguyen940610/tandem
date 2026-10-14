@@ -849,6 +849,15 @@ describe("#2180 — a supervisor with nothing to launch, and one already restart
       expect(res.body).toMatchObject({ code: "NO_CLAUDE_INTEGRATION" });
       expect((res.body as { message: string }).message).toContain("Connect AI");
     });
+
+    it(`${route} with no Claude Code to start answers 409 CLAUDE_CLI_UNUSABLE (#2199)`, async () => {
+      const sup = supWith({ running: false }, { spawned: false, why: "cli-unusable" });
+      const { app } = makeApp(baseDeps(sup));
+      const nonce = (await request(app, "GET", "/api/launcher/nonce")).body as { nonce: string };
+      const res = await request(app, "POST", `/api/launcher/${route}`, { nonce: nonce.nonce });
+      expect(res.status).toBe(409);
+      expect(res.body).toMatchObject({ code: "CLAUDE_CLI_UNUSABLE" });
+    });
   }
 });
 
@@ -1762,6 +1771,19 @@ describe("POST /api/launcher/start — the Start control (userInitiated, #2195)"
     });
     expect(res.status).toBe(404);
     expect((res.body as { code: string }).code).toBe("NO_CLAUDE_INTEGRATION");
+  });
+
+  it("answers 409 when there is no Claude Code to start (#2199)", async () => {
+    const sup = makeFakeSupervisor({
+      startByUser: async () => ({ spawned: false, why: "cli-unusable" }),
+    });
+    const { app } = makeApp(baseDeps(sup));
+    const res = await request(app, "POST", "/api/launcher/start", {
+      nonce: await freshNonce(app),
+      userInitiated: true,
+    });
+    expect(res.status).toBe(409);
+    expect((res.body as { code: string }).code).toBe("CLAUDE_CLI_UNUSABLE");
   });
 
   it("is still no bypass of TANDEM_DISABLE_LAUNCHER=1", async () => {

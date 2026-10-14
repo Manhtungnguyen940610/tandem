@@ -39,8 +39,13 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const STUB_SOURCE = path.join(HERE, "stub-claude-cli.cjs");
 /** Sentinel for `TANDEM_CLAUDE_CMD`, so the recorded argv proves the binary the
- * supervisor chose actually reached the reaper's argument vector. */
-const CLAUDE_BIN_SENTINEL = "tandem-stub-claude-sentinel";
+ * supervisor chose actually reached the reaper's argument vector. A real,
+ * executable file at an ABSOLUTE path, minted per test: the launcher resolves
+ * its command before spawning and spawns nothing for a name that resolves to
+ * no startable file (#2199). Never run — the reaper here is node, which runs
+ * the pid-named stub instead. */
+const CLAUDE_BIN_NAME = `tandem-stub-claude-sentinel${process.platform === "win32" ? ".exe" : ""}`;
+let CLAUDE_BIN_SENTINEL: string;
 const VALID_UUID = "550e8400-e29b-41d4-a716-446655440000";
 
 const ENV_KEYS = [
@@ -195,6 +200,8 @@ beforeEach(() => {
   process.env.NODE_ENV = "test";
   delete process.env.TANDEM_TAURI_SIDECAR;
   process.env.TANDEM_REAPER_PATH = process.execPath;
+  CLAUDE_BIN_SENTINEL = path.join(recordDir, CLAUDE_BIN_NAME);
+  fs.writeFileSync(CLAUDE_BIN_SENTINEL, "", { mode: 0o755 });
   process.env.TANDEM_CLAUDE_CMD = CLAUDE_BIN_SENTINEL;
   process.env.TANDEM_STUB_CLAUDE_RECORD_DIR = recordDir;
 });

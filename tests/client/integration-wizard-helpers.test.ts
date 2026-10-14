@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeDoneHeaderState,
   pushSupportNote,
+  TANDEM_CLAUDE_SIGN_IN_LINE,
   tandemClaudeDoneCopy,
 } from "../../src/client/components/integration-wizard-helpers.js";
 import { targetPushSupport } from "../../src/shared/integrations/contract.js";
@@ -98,9 +99,21 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
   });
 
   it("a start that has since failed stops promising one", () => {
-    const line = tandemClaudeDoneCopy("starting", { ...stopped, remedy: "sign-in" });
+    const line = tandemClaudeDoneCopy("starting", { ...stopped, remedy: "restart" });
     expect(line).toMatch(/couldn't start/);
     expect(line).not.toMatch(/starting/);
+  });
+
+  it("a sign-in stop is the sign-in step, whatever the Apply answered (#2199)", () => {
+    for (const initial of ["starting", "running", "held", "other-ai", "cli-unusable"] as const) {
+      expect(tandemClaudeDoneCopy(initial, { ...stopped, remedy: "sign-in" })).toBe(
+        TANDEM_CLAUDE_SIGN_IN_LINE,
+      );
+    }
+    // Running wins over it: a sign-in that has since worked is not still owed.
+    expect(
+      tandemClaudeDoneCopy("starting", { ...stopped, running: true, remedy: "sign-in" }),
+    ).toMatch(/^Tandem's own Claude is running/);
   });
 
   it.each([
@@ -134,6 +147,7 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
     ["other-ai", "another AI session"],
     ["refused", "Settings → License"],
     ["not-configured", "couldn't find the Claude Code setup it just saved"],
+    ["cli-unusable", "couldn't find Claude Code on this computer"],
   ] as const)("%s has its own line", (initial, phrase) => {
     expect(tandemClaudeDoneCopy(initial, stopped)).toContain(phrase);
   });

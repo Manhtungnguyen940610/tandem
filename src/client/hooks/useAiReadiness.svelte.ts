@@ -498,6 +498,15 @@ export interface AiReadiness {
    */
   readonly pushDelivery: PushDelivery;
   /**
+   * The launcher found no Claude Code setup to run (#2199): the status's own
+   * `available: false, reason: "not-configured"`, read off the RAW status
+   * rather than `state` — a connected Claude Desktop makes `state` read
+   * "ready" first, and that user is exactly who the chat panel's offer is
+   * for. False off-loopback (the `reason` is redacted there) and while the
+   * server is unreachable.
+   */
+  readonly launcherNotConfigured: boolean;
+  /**
    * Has `/health` gone quiet for a full strike run?
    *
    * The question is about the SERVER, not the AI, and the two were previously
@@ -1162,6 +1171,12 @@ export function createAiReadiness(deps: {
   const greetingLate = $derived(
     status !== null && status.available && status.greetingLate === true,
   );
+  const launcherNotConfigured = $derived(
+    status !== null &&
+      status.available === false &&
+      status.reason === "not-configured" &&
+      !serverUnreachable,
+  );
   const launcherStartsOnMessage = $derived(
     status !== null &&
       status.available &&
@@ -1271,6 +1286,9 @@ export function createAiReadiness(deps: {
     },
     get pushDelivery() {
       return pushDelivery;
+    },
+    get launcherNotConfigured() {
+      return launcherNotConfigured;
     },
     get serverUnreachable() {
       return serverUnreachable;
