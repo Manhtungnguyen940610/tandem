@@ -18,6 +18,8 @@ import type {
   ExistingMcpInstall,
 } from "../../src/shared/integrations/contract.js";
 
+// `presence` is reactive: an install moves it on while the offer is mounted.
+const presenceCell = reactiveCell<ClaudeCliPresence | null>(null);
 const cliStub: {
   presence: ClaudeCliPresence | null;
   bareNameLaunchable: boolean | null;
@@ -28,7 +30,12 @@ const cliStub: {
   install: ReturnType<typeof vi.fn<() => Promise<ClaudeCliPresence | null>>>;
   refetch: ReturnType<typeof vi.fn<() => Promise<void>>>;
 } = {
-  presence: null,
+  get presence() {
+    return presenceCell.value;
+  },
+  set presence(next) {
+    presenceCell.value = next;
+  },
   bareNameLaunchable: null,
   loading: false,
   error: null,
@@ -98,6 +105,7 @@ vi.mock(import("../../src/client/hooks/useCoworkStatus.svelte"), () => ({
 }));
 
 import IntegrationWizardModal from "../../src/client/components/IntegrationWizardModal.svelte";
+import { reactiveCell } from "../helpers/reactive-cell.svelte";
 
 function q(container: HTMLElement, id: string): HTMLElement | null {
   return container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
@@ -137,15 +145,80 @@ describe("IntegrationWizardModal — the Claude Code offer for a Claude Desktop 
   });
 
   it.each([
-    ["Claude Code is already installed", () => (cliStub.presence = "INSTALLED_ON_PATH")],
     ["the CLI probe has not answered", () => (cliStub.presence = null)],
-    ["a Claude Code card is already there", () => existing.push(codeInstall)],
-    ["there is no Claude Desktop", () => (existing.length = 0)],
+    [
+      "Claude Code is installed and has a card",
+      () => {
+        cliStub.presence = "INSTALLED_ON_PATH";
+        existing.push(codeInstall);
+      },
+    ],
+    [
+      "there is no Claude Desktop and no Claude Code card",
+      () => {
+        existing.length = 0;
+        existing.push({
+          ...codeInstall,
+          target: { ...codeInstall.target, kind: "cursor" },
+        } as never);
+      },
+    ],
   ])("hidden when %s", async (_l, arrange) => {
     arrange();
     const { container } = mount();
     await tick();
     expect(q(container, "integration-wizard-claude-code-offer")).toBeNull();
+  });
+
+  it("a Claude Code card with no Claude Code program: the same Install, as a repair", async () => {
+    existing.push(codeInstall);
+    const { container } = mount();
+    await tick();
+    const block = q(container, "integration-wizard-claude-code-offer");
+    expect(block?.getAttribute("data-offer-phase")).toBe("missing");
+    expect(block?.textContent).toContain("can't start its own");
+    expect(q(container, "integration-wizard-claude-code-offer-install")).not.toBeNull();
+  });
+
+  it("installed but never run (no card yet): the run-it-once step, not a dead end", async () => {
+    cliStub.presence = "INSTALLED_ON_PATH";
+    const { container } = mount();
+    await tick();
+    expect(
+      q(container, "integration-wizard-claude-code-offer")?.getAttribute("data-offer-phase"),
+    ).toBe("not-detected");
+    expect(q(container, "integration-wizard-claude-code-offer-recheck")).not.toBeNull();
+  });
+
+  it("the block stays mounted while the install's re-read runs, though presence has moved on", async () => {
+    let release!: () => void;
+    refreshDetected.mockImplementationOnce(
+      () =>
+        new Promise<ExistingMcpInstall[]>((resolve) => {
+          release = () => {
+            existing.push(codeInstall);
+            resolve([codeInstall]);
+          };
+        }),
+    );
+    cliStub.install = vi.fn(async () => {
+      cliStub.presence = "INSTALLED_NOT_ON_PATH";
+      return "INSTALLED_NOT_ON_PATH" as const;
+    });
+    const { container } = mount();
+    await tick();
+    await fireEvent.click(
+      q(container, "integration-wizard-claude-code-offer-install") as HTMLElement,
+    );
+    await waitFor(() => expect(refreshDetected).toHaveBeenCalled());
+    await tick();
+    // Not merely a block: the same Install the user clicked, not a flash of
+    // the "run claude once" step, so focus has somewhere to stay.
+    expect(q(container, "integration-wizard-claude-code-offer-install")).not.toBeNull();
+    release();
+    await waitFor(() =>
+      expect(q(container, "integration-wizard-claude-code-offer-installed")).not.toBeNull(),
+    );
   });
 
   it("Install installs, then re-reads WITHOUT starting over and ticks the new Claude Code card", async () => {

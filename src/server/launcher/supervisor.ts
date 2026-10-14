@@ -2849,7 +2849,13 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     byMessage: boolean,
   ): Promise<RespawnResult> {
     await stopInternal();
-    if (clearSession) clearSavedSession();
+    // Resolved before the session is dropped (#2199 review): a Start fresh
+    // that finds no Claude Code must not have deleted the conversation on its
+    // way to saying so. (Still answered after the plan, so a user with no
+    // integration hears "not set up" — and that start fresh still drops it,
+    // as before.)
+    const claudeBin = resolveCommand();
+    if (clearSession && claudeBin !== null) clearSavedSession();
     // relaunch/startFresh always mean "user is actively asking" → clear breaker.
     // A start for a message does not (#2196): a chat is not a decision to try
     // a Claude that kept crashing again, and nothing else bounds how often one
@@ -2872,13 +2878,15 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       settings = await readSettingsNow();
       plan = await buildPlan(cwdOverride);
     } finally {
-      // No spawn is coming (no integration, or a read threw). From `off` the
-      // watch armed above owes it nothing (#1866); the standby watch still
-      // stands, so a later message can try again.
-      if (plan === null && standby === "off") disarmGapWatch();
+      // No spawn is coming (no integration, nothing to run, or a read threw).
+      // From `off` the watch armed above owes it nothing (#1866); the standby
+      // watch still stands, so a later message can try again.
+      if ((plan === null || claudeBin === null) && standby === "off") disarmGapWatch();
     }
-    if (!plan || !settings) return { spawned: false, why: "no-integration" };
-    const claudeBin = resolveCommand();
+    if (!plan || !settings) {
+      if (clearSession && claudeBin === null) clearSavedSession();
+      return { spawned: false, why: "no-integration" };
+    }
     if (claudeBin === null) {
       recordCliUnusable("Starting Claude");
       return { spawned: false, why: "cli-unusable" };
@@ -3121,6 +3129,20 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         ...(greetingLate() ? { greetingLate: true as const } : {}),
       };
     }
+    // A `cli-unusable` with no crash behind it (#2199) is a reading of the
+    // filesystem, so it lapses once Claude Code is there: otherwise it would
+    // mask the standby's Start, and the only remedy it names (Set up) would
+    // keep offering an install the user has already done. One resolve per
+    // poll, only while this is the error; a tripped breaker's copy waits for
+    // the user's Restart as before.
+    if (
+      lastError === "cli-unusable" &&
+      !breakerTripped &&
+      child === null &&
+      resolveCommand() !== null
+    ) {
+      lastError = undefined;
+    }
     const stopped: Extract<SupervisorStatus, { running: false }> = { running: false };
     if (lastError) stopped.lastError = lastError;
     if (restartPending()) stopped.restartPending = true;
@@ -3211,6 +3233,10 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // to avoid.
       if (resolveCommand() === null) {
         recordCliUnusable("Setup wrote a Claude Code entry");
+        // Nothing started, so nothing was released: the next Apply — after
+        // the user installs Claude Code — releases the walkthrough's hold as
+        // this one would have.
+        walkthroughHold = heldForWalkthrough;
         return decide("cli-unusable");
       }
       decide("starting");

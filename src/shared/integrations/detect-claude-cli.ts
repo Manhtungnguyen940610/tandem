@@ -1,6 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, extname, isAbsolute, join } from "node:path";
+import { basename, delimiter, extname, isAbsolute, join, resolve } from "node:path";
 
 import { rejectUnsafeWindowsPrefix } from "../windows-path-safety.js";
 import type { ClaudeCliPresence } from "./contract.js";
@@ -145,16 +145,22 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
   const name = override || "claude";
   const ext = extname(name).toLowerCase();
 
-  const startable = (candidate: string): boolean => {
-    if (win32 && rejectUnsafeWindowsPrefix(candidate) !== null) return false;
-    if (!isFile(candidate)) return false;
-    if (win32) return true;
-    try {
-      accessSync(candidate, constants.X_OK);
-      return true;
-    } catch {
-      return false;
+  // The launch this candidate would be, or null. Resolved first, and that
+  // resolved path is both what is checked and what is run: on Windows a
+  // root-relative `\bin\claude.exe` counts as absolute but names a different
+  // drive from the reaper's cwd than from this process's (#2199 review).
+  const launch = (candidate: string): ClaudeLaunch | null => {
+    const abs = resolve(candidate);
+    if (win32 && rejectUnsafeWindowsPrefix(abs) !== null) return null;
+    if (!isFile(abs)) return null;
+    if (!win32) {
+      try {
+        accessSync(abs, constants.X_OK);
+      } catch {
+        return null;
+      }
     }
+    return { command: abs, knownUnstartable: false };
   };
 
   // A concrete path: no search, but it must be absolute.
@@ -162,11 +168,9 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
     if (!isAbsolute(name)) return win32 ? UNSTARTABLE : NOTHING;
     if (win32) {
       const candidate = ext === "" ? `${name}.exe` : ext === ".exe" ? name : null;
-      return candidate !== null && startable(candidate)
-        ? { command: candidate, knownUnstartable: false }
-        : UNSTARTABLE;
+      return (candidate !== null && launch(candidate)) || UNSTARTABLE;
     }
-    return startable(name) ? { command: name, knownUnstartable: false } : NOTHING;
+    return launch(name) ?? NOTHING;
   }
 
   // A bare name: PATH. On Windows only `<stem>.exe` is startable.
@@ -180,8 +184,8 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
     const dir = win32 ? raw.replace(/^"(.*)"$/, "$1") : raw;
     if (dir.length === 0 || !isAbsolute(dir)) continue;
     if (win32 && rejectUnsafeWindowsPrefix(dir) !== null) continue;
-    const candidate = join(dir, win32 ? `${stem}.exe` : stem);
-    if (startable(candidate)) return { command: candidate, knownUnstartable: false };
+    const hit = launch(join(dir, win32 ? `${stem}.exe` : stem));
+    if (hit) return hit;
     if (!sawWrapper && wrappers.some((n) => isFile(join(dir, n)))) sawWrapper = true;
   }
 
@@ -189,8 +193,8 @@ function resolveClaudeLaunchUnguarded(opts: BareNameLaunchableOptions): ClaudeLa
   if (!override) {
     const home = opts.homeOverride ?? homedir();
     if (!win32 || rejectUnsafeWindowsPrefix(home) === null) {
-      const native = join(home, ".local", "bin", win32 ? "claude.exe" : "claude");
-      if (startable(native)) return { command: native, knownUnstartable: false };
+      const hit = launch(join(home, ".local", "bin", win32 ? "claude.exe" : "claude"));
+      if (hit) return hit;
     }
   }
   return { command: null, knownUnstartable: sawWrapper };

@@ -128,6 +128,33 @@ describe("ChatPanel — the offer row", () => {
     expect(container.querySelector("[data-testid='chat-pickup-status']")).not.toBeNull();
   });
 
+  it("scrolls into view when it joins a waiting row at the stall threshold", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    try {
+      const t0 = 1_800_000_000_000;
+      vi.setSystemTime(t0);
+      const scroll = vi.fn();
+      Element.prototype.scrollIntoView = scroll as unknown as Element["scrollIntoView"];
+      const sent: ChatMessage = {
+        id: "u1",
+        author: "user",
+        text: "hi",
+        timestamp: t0,
+        read: false,
+      };
+      const { container } = renderChat([sent], true);
+      await tick();
+      expect(row(container)).toBeNull();
+      const before = scroll.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(DELIVERY_STALL_MS + 1_000);
+      await tick();
+      expect(row(container)).not.toBeNull();
+      expect(scroll.mock.calls.length).toBeGreaterThan(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("not when App says it is not eligible", async () => {
     const { container } = renderChat([], false);
     await tick();

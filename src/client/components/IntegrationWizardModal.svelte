@@ -260,13 +260,17 @@ function reachabilityStatusFor(id: string): ReachabilityStatus | null {
 // Claude included (#2197). While the Apply started it (or it was running), a
 // session proves nothing about the user's own Claude, so the screen does not
 // claim "connected" and keeps the restart-and-/mcp guidance.
-// Nor when this wizard just installed Claude Code (#2199): the session it sees
-// is the user's Claude Desktop, never the Claude Code that has not signed in.
+// Nor when this wizard just installed the Claude Code it applied (#2199): the
+// session it sees is the user's Claude Desktop, never a Claude Code that has
+// not signed in.
+const installedHereAndApplied = $derived(
+  offerPhase === "installed" && wizard.picked.some((p) => p.config.kind === "claude-code"),
+);
 const userClaudeConnected = $derived(
   reachability.claudeConnected &&
     wizard.tandemClaude !== "starting" &&
     wizard.tandemClaude !== "running" &&
-    offerPhase !== "installed",
+    !installedHereAndApplied,
 );
 
 // Adapt the "what's next" guidance to the reachability outcome.
@@ -279,9 +283,15 @@ const whatsNext = $derived.by(
     if (!hasHttp && rows.length > 0) return "stdio-only";
     if (rows.some((r) => r.status === "unreachable")) return "unreachable";
     if (userClaudeConnected) return "connected";
-    // Installed here for Tandem's own Claude (#2199): "restart Claude Code and
-    // run /mcp" is advice for a terminal session this user never had.
-    if (offerPhase === "installed") return "tandem-claude";
+    // Installed here for Tandem's own Claude, which the Apply is starting
+    // (#2199): "restart Claude Code and run /mcp" is advice for a terminal
+    // session this user never had. Any other answer has its own line below.
+    if (
+      installedHereAndApplied &&
+      (wizard.tandemClaude === "starting" || wizard.tandemClaude === "running")
+    ) {
+      return "tandem-claude";
+    }
     return "default";
   },
 );
@@ -598,21 +608,42 @@ const keepIsPrimary = $derived(
 
 // --- The Claude Code offer for a Claude Desktop setup (#2199) ---------------
 let offerEl: HTMLElement | null = $state(null);
-const showClaudeCodeOffer = $derived(
-  view === "main" &&
-    wizard.step === "connect" &&
-    !wizard.detecting &&
-    wizard.existing.some((i) => i.target.kind === "claude-desktop") &&
-    (offerPhase !== "idle" || (!hasClaudeCodeInstall && cliStatus.presence === "NOT_INSTALLED")),
+/** An install from the offer is running, or re-reading detection after it:
+ * `presence` has already moved on, and the block must not unmount under the
+ * focused button meanwhile. */
+let offerBusy = $state(false);
+const hasClaudeDesktopInstall = $derived(
+  wizard.existing.some((i) => i.target.kind === "claude-desktop"),
 );
+/**
+ * What the offer block shows, or null for no block:
+ *   - `offer` — Claude Desktop, no Claude Code anywhere: the opt-in.
+ *   - `missing` — a Claude Code card, but no Claude Code program: Tandem's own
+ *     Claude cannot start (the launcher's `cli-unusable`), so the same Install.
+ *   - `installed` / `not-detected` — after an install from here.
+ *   - `not-detected` also when Claude Code is installed but has never been run
+ *     (no card): arriving from the chat panel's offer must not be a dead end.
+ */
+const offerView = $derived.by((): "offer" | "missing" | "installed" | "not-detected" | null => {
+  if (view !== "main" || wizard.step !== "connect" || wizard.detecting) return null;
+  if (offerPhase !== "idle") return offerPhase;
+  const missing = cliStatus.presence === "NOT_INSTALLED" || offerBusy;
+  if (missing) return hasClaudeCodeInstall ? "missing" : hasClaudeDesktopInstall ? "offer" : null;
+  if (cliStatus.presence !== null && hasClaudeDesktopInstall && !hasClaudeCodeInstall) {
+    return "not-detected";
+  }
+  return null;
+});
+const showClaudeCodeOffer = $derived(offerView !== null);
 
 /** Re-read detection, ticking a newly found Claude Code card; `fallback` is
  * the phase when none appeared. The button that was clicked unmounts on a
  * phase change, so focus moves to the new note rather than falling to <body>
  * inside the focus-trapped dialog. */
 async function refreshAfterInstall(fallback: "not-detected" | null): Promise<void> {
-  const fresh = await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
-  const next = fresh.some((i) => i.target.kind === "claude-code") ? "installed" : fallback;
+  await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+  const card = wizard.existing.some((i) => i.target.kind === "claude-code");
+  const next = card ? "installed" : fallback;
   if (next === null) return;
   offerPhase = next;
   await tick();
@@ -623,9 +654,14 @@ async function refreshAfterInstall(fallback: "not-detected" | null): Promise<voi
  * ticked (Bryan, 2026-10-14). A failed install shows `cliStatus`'s error and
  * leaves the offer as it was. */
 async function installFromOffer(): Promise<void> {
-  const next = await cliStatus.install();
-  if (next === null || next === "NOT_INSTALLED") return;
-  await refreshAfterInstall("not-detected");
+  offerBusy = true;
+  try {
+    const next = await cliStatus.install();
+    if (next === null || next === "NOT_INSTALLED") return;
+    await refreshAfterInstall("not-detected");
+  } finally {
+    offerBusy = false;
+  }
 }
 
 /** Check again, without starting over: the picks the user made stay. */
@@ -1183,9 +1219,9 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 class="iw-offer"
                 bind:this={offerEl}
                 data-testid="integration-wizard-claude-code-offer"
-                data-offer-phase={offerPhase}
+                data-offer-phase={offerView}
               >
-                {#if offerPhase === "installed"}
+                {#if offerView === "installed"}
                   <div
                     class="iw-whats-next"
                     tabindex="-1"
@@ -1194,11 +1230,12 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                   >
                     {@render checkIcon()}
                     <span>
-                      Claude Code is installed and ticked above. Choose Connect, then sign in to
-                      it once if it asks.
+                      {picksClaudeCode
+                        ? "Claude Code is installed and ticked above. Choose Connect, then sign in to it once if it asks."
+                        : "Claude Code is installed. Tick Claude Code above, choose Connect, then sign in to it once if it asks."}
                     </span>
                   </div>
-                {:else if offerPhase === "not-detected"}
+                {:else if offerView === "not-detected"}
                   <p class="iw-hint-text" tabindex="-1" data-offer-focus="true">
                     Claude Code is installed. Open a new terminal, run <code>claude</code> once,
                     then choose Check again.
@@ -1214,13 +1251,21 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                     </button>
                   </div>
                 {:else}
-                  <p class="iw-offer-title">Want answers right here in Tandem?</p>
-                  <p class="iw-hint-text">
-                    Claude Desktop answers only when you ask it something in Claude Desktop. To
-                    get answers here as you send them, Tandem can run its own Claude in the
-                    background. That needs Claude Code, a separate app from Anthropic.
-                    Installing it doesn't change your Claude Desktop setup.
-                  </p>
+                  {#if offerView === "missing"}
+                    <p class="iw-offer-title">Claude Code isn't on this computer</p>
+                    <p class="iw-hint-text">
+                      Tandem can't find the Claude Code program, so it can't start its own
+                      Claude. Install it again — a small, signed download from Anthropic.
+                    </p>
+                  {:else}
+                    <p class="iw-offer-title">Want answers right here in Tandem?</p>
+                    <p class="iw-hint-text">
+                      Claude Desktop answers only when you ask it something in Claude Desktop.
+                      To get answers here as you send them, Tandem can run its own Claude in the
+                      background. That needs Claude Code, a separate app from Anthropic.
+                      Installing it doesn't change your Claude Desktop setup.
+                    </p>
+                  {/if}
                   <div>
                     <button
                       type="button"

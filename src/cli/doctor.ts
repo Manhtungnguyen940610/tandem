@@ -2038,7 +2038,7 @@ export function evaluateClaudeCli(
       // Tandem's launcher looks in ~/.local/bin itself (#2199), so this is
       // about the user's own terminal only. A shim earlier on PATH would still
       // be what that terminal runs, which is worth knowing when the two differ.
-      fix: "Add ~/.local/bin to your PATH and open a new terminal so `claude` works there too (Tandem's own launcher already finds it in ~/.local/bin)",
+      fix: "Add ~/.local/bin to your PATH and open a new terminal so `claude` works there too (Tandem's own launcher already looks in ~/.local/bin, unless TANDEM_CLAUDE_CMD names another program)",
     };
   }
   return {

@@ -192,9 +192,13 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
+  // Read up front, not inside the chain: while the pickup row reads
+  // "waiting" the chain would short-circuit past it, and the offer row that
+  // joins it at the stall threshold would land below the fold.
+  const offer = claudeCodeOffer;
   let kind: string | null = tandemClaudeResume?.kind ?? null;
   if (kind === null && tandemClaudeGreetingLate) kind = "greeting";
-  kind ??= pickupKind ?? (claudeCodeOffer ? "offer" : null);
+  kind ??= pickupKind ?? (offer ? "offer" : null);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -630,7 +634,9 @@ async function exportChat() {
         ? chatResumeLabel(tandemClaudeResume)
         : tandemClaudeGreetingLate
           ? GREETING_LATE_TEXT
-          : chatPickupAnnouncement(pickupKind)}
+          : claudeCodeOffer
+            ? CLAUDE_CODE_OFFER_TEXT
+            : chatPickupAnnouncement(pickupKind)}
       data-testid="chat-pickup-live"
     />
     <div bind:this={messagesEndEl}></div>

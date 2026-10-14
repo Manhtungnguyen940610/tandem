@@ -172,21 +172,29 @@ describe("resolveClaudeLaunch", () => {
       ).toBe(exe);
     });
 
+    // `//<path>` is the same directory as `/<path>` on POSIX, and a UNC
+    // spelling to `rejectUnsafeWindowsPrefix`: a real file sits behind each, so
+    // these fail if the screen goes and the probe is allowed to find it.
     it("skips a UNC PATH entry rather than probing it", () => {
-      expect(
-        resolveClaudeLaunch({
-          ...base,
-          pathOverride: "\\\\server\\share\\bin",
-          homeOverride: home,
-        }),
-      ).toEqual({ command: null, knownUnstartable: false });
+      const dir = join(root, "unc");
+      seed(dir, "claude.exe");
+      expect(resolveClaudeLaunch({ ...base, pathOverride: `/${dir}`, homeOverride: home })).toEqual(
+        { command: null, knownUnstartable: false },
+      );
+      // Control: the same directory spelled plainly is found.
+      expect(resolveClaudeLaunch({ ...base, pathOverride: dir, homeOverride: home }).command).toBe(
+        join(dir, "claude.exe"),
+      );
     });
 
     it("a UNC home is never probed for the native install", () => {
+      seed(nativeDir(), "claude.exe");
       expect(
-        resolveClaudeLaunch({ ...base, pathOverride: empty, homeOverride: "\\\\server\\home" })
-          .command,
+        resolveClaudeLaunch({ ...base, pathOverride: empty, homeOverride: `/${home}` }).command,
       ).toBeNull();
+      expect(
+        resolveClaudeLaunch({ ...base, pathOverride: empty, homeOverride: home }).command,
+      ).toBe(join(nativeDir(), "claude.exe"));
     });
 
     it("an override naming a wrapper is refused — CreateProcessW would hand it to cmd.exe", () => {

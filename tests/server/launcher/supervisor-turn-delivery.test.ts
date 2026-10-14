@@ -3137,6 +3137,46 @@ describe("#2199 — no Claude Code to start: nothing is spawned, and nothing is 
     expect(sup.status()).not.toHaveProperty("lastError", "cli-unusable");
   });
 
+  it("a Start fresh that finds no CLI keeps the conversation it was about to drop", async () => {
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.startFresh(cwdDir);
+    await nthChild(1);
+    const sessionFile = path.join(baseDir, "launcher-session.json");
+    const before = fs.readFileSync(sessionFile, "utf8");
+    cmd.set(null);
+    exitChild(children[0], 1);
+    // The crash restart finds nothing to run.
+    await waitFor(() => sup.status().lastError === "cli-unusable", "the restart's diagnosis");
+    await expect(sup.startFresh()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(fs.readFileSync(sessionFile, "utf8")).toBe(before);
+  });
+
+  it("the diagnosis lapses once Claude Code is there, so the standby's Start shows again", async () => {
+    writeLauncherSettingsFile({ startMode: "on-click", lifetime: "always", idleMinutes: 30 });
+    const cmd = withCommand(null);
+    const { sup } = makeSupervisor(cmd.opts);
+    await sup.start();
+    await expect(sup.startByUser()).resolves.toEqual({ spawned: false, why: "cli-unusable" });
+    expect(sup.status()).toMatchObject({ lastError: "cli-unusable" });
+    expect(sup.status()).not.toHaveProperty("standby");
+    cmd.set(process.execPath);
+    expect(sup.status()).not.toHaveProperty("lastError");
+    expect(sup.status()).toMatchObject({ standby: "awaiting-start" });
+  });
+
+  it("an Apply that found no CLI keeps the walkthrough's hold for the Apply after the install", async () => {
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "always", idleMinutes: 30 });
+    const cmd = withCommand(process.execPath);
+    const { sup } = makeSupervisor({ ...cmd.opts, walkthroughPending: () => true });
+    await sup.start();
+    cmd.set(null);
+    expect(await sup.startAfterSetup()).toBe("cli-unusable");
+    cmd.set(process.execPath);
+    expect(await sup.startAfterSetup()).toBe("starting");
+    await nthChild(1);
+  });
+
   it("a Start with no CLI and no Claude says so; with no integration it still says not set up", async () => {
     const cmd = withCommand(null);
     const { sup } = makeSupervisor(cmd.opts);

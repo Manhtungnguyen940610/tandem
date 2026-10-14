@@ -819,7 +819,7 @@ describe("evaluateClaudeCli", () => {
     // errand that changes nothing.
     const result = evaluateClaudeCli("INSTALLED_NOT_ON_PATH");
     expect(result.fix).toContain("open a new terminal");
-    expect(result.fix).toContain("already finds it");
+    expect(result.fix).toContain("already looks in ~/.local/bin");
     expect(result.fix).not.toContain("restart Tandem");
   });
 
