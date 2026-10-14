@@ -2261,9 +2261,9 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         if (awaitingGreetingResult) {
           awaitingGreetingResult = false;
           if (greeting?.phase === "pending") greeting.phase = "unanswered";
-          const errored =
-            parsed.is_error === true ||
-            (parsed.subtype !== undefined && parsed.subtype !== "success");
+          // `error*` only: a subtype this build does not know must not leave
+          // the greeting owed, or every later spawn would greet again.
+          const errored = parsed.is_error === true || parsed.subtype?.startsWith("error") === true;
           if (!errored) spendGreeting();
         }
 
