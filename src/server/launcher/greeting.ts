@@ -12,10 +12,14 @@
  *   - **Read by the supervisor at every spawn** (`isGreetingOwed`) —
  *     synchronously, like the saved session, so it adds no await to the crash
  *     restart path.
- *   - **Marked done** (`markGreeted`) only once Tandem's Claude has actually
- *     written to the chat, never when the turn was merely sent: a Claude that
- *     was not signed in, or could not use Tandem's tools, has not greeted
- *     anyone, and the next start after the user fixes it should try again.
+ *   - **Marked done** (`markGreeted`) once the greeting turn has RUN — its
+ *     first non-errored `result`, or a `tandem_reply` from Tandem's own child
+ *     before that — never when the turn was merely sent. "Once" does not hang
+ *     on spotting a chat reply (a hello left in a comment thread would repeat
+ *     on every spawn). Only an errored turn (not signed in, among others)
+ *     leaves it owed, so the start after the user fixes it greets. A turn that
+ *     ran but could not use Tandem's tools has spent it: the "hasn't said
+ *     hello" note is the visible fallback for that case.
  *
  * Every failure reads as "not owed". A missed greeting costs a hello; a
  * repeated one is Claude acting unasked twice.

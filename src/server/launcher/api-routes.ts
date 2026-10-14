@@ -69,6 +69,7 @@ import {
   LAUNCHER_ERROR_INVALID_NONCE,
   LAUNCHER_ERROR_NO_INTEGRATION,
   LAUNCHER_ERROR_NOT_AVAILABLE,
+  LAUNCHER_ERROR_OFF_NOT_SAVED,
   LAUNCHER_ERROR_PATH_REJECTED,
   LAUNCHER_ERROR_REAPER_NOT_FOUND,
   LAUNCHER_ERROR_SETTINGS_NEWER,
@@ -386,14 +387,28 @@ function sendNoIntegration(res: Response): void {
  * every launcher action — Relaunch, Start fresh, and #2195's Start, Turn off
  * and Settings save — failed here with a 403 before any of them could run.
  *
- * `Sec-Fetch-Site` is a forbidden header: a page cannot set it, and a
- * cross-site `<img>` probe (which also sends no `Origin`) says `cross-site`, so
- * it still cannot rotate the nonce out from under the user. A local non-browser
- * process could forge it, but could equally forge `Origin`, so this widens
- * nothing. Scoped to this one read rather than the shared gate.
+ * The `Sec-Fetch-*` headers are forbidden headers: a page cannot set them. A
+ * cross-site `<img>` probe (which also sends no `Origin`) says `cross-site`.
+ * A SAME-origin `<img>`, iframe or link — which a document opened in the npm
+ * build's editor can make, since its CSP allows `img-src 'self'` and
+ * root-relative image paths survive sanitizing — says `same-origin` too, so
+ * the admission also requires what only a script's `fetch()` sends:
+ * `Sec-Fetch-Dest: empty` with mode `cors` or `same-origin` (measured
+ * 2026-10-14: `<img>` is `no-cors`/`image`, an iframe `navigate`/`iframe`, a
+ * link `navigate`/`document`). Without that, document content could rotate the
+ * nonce between the client's GET and its POST and fail the user's action. A
+ * local non-browser process could forge all of these, but could equally forge
+ * `Origin`, so this widens nothing. Scoped to this one read rather than the
+ * shared gate.
  */
 function refuseNonceOrigin(req: Request, res: Response): boolean {
-  if (req.headers.origin === undefined && req.headers["sec-fetch-site"] === "same-origin") {
+  const mode = req.headers["sec-fetch-mode"];
+  if (
+    req.headers.origin === undefined &&
+    req.headers["sec-fetch-site"] === "same-origin" &&
+    req.headers["sec-fetch-dest"] === "empty" &&
+    (mode === "cors" || mode === "same-origin")
+  ) {
     return false;
   }
   return assertOriginAllowlisted(req, res, API_LAUNCHER_NONCE);
@@ -851,9 +866,18 @@ function makeSettingsGetHandler(deps: LauncherRoutesDeps): Handler {
     const read = await readLauncherSettings(deps.settingsBase);
     const body: LauncherSettingsResponse = { settings: read.settings };
     if (read.source === "file" && read.newer) body.readOnly = true;
-    // The file could not be read, so these are what Tandem is doing (waiting
-    // for Start), not a saved choice — and Settings must say so.
-    if (read.source === "fallback") body.unreadable = true;
+    // The file could not be read, so these are not a saved choice — and
+    // Settings must say so. Show what Tandem is actually acting on: the
+    // supervisor's last good read when it has one (a file that broke mid-run
+    // leaves Claude on the mode it had), else the fallback.
+    if (read.source === "fallback") {
+      body.unreadable = true;
+      const applied = deps.getSupervisor()?.appliedSettings() ?? null;
+      if (applied) {
+        body.settings = applied;
+        body.keptLastGood = true;
+      }
+    }
     res.json(body);
   };
 }
@@ -903,6 +927,18 @@ function makeSettingsPostHandler(deps: LauncherRoutesDeps): Handler {
         : await updateLauncherSettings(deps.settingsBase, parsed.patch);
       res.json({ ok: true, settings });
     } catch (err) {
+      // `updateSettings` stops Claude for an Off even when the save fails, so
+      // the answer is "off now, not saved", never "couldn't turn off".
+      if (parsed.patch.startMode === "off" && deps.getSupervisor()) {
+        console.error("[Launcher] Turned Tandem's Claude off but could not save it:", err);
+        res.status(409).json({
+          error: "CONFLICT",
+          code: LAUNCHER_ERROR_OFF_NOT_SAVED,
+          message:
+            "Tandem's Claude is off now, but Tandem couldn't save that, so it may start again the next time Tandem starts.",
+        });
+        return;
+      }
       if (err instanceof SettingsNewerError) {
         res.status(409).json({
           error: "CONFLICT",

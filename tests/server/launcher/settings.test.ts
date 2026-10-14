@@ -110,6 +110,15 @@ describe("readLauncherSettings", () => {
     });
   });
 
+  it("a newer file with a start mode this build doesn't know reads as on-click, still newer", async () => {
+    write(JSON.stringify({ version: 2, startMode: "scheduled", lifetime: "idle" }));
+    expect(await readLauncherSettings(base)).toEqual({
+      source: "file",
+      newer: true,
+      settings: { startMode: "on-click", lifetime: "idle", idleMinutes: 30 },
+    });
+  });
+
   it("an out-of-range idle limit is defaulted, not trusted", async () => {
     write(JSON.stringify({ version: 1, startMode: "auto", lifetime: "idle", idleMinutes: 99999 }));
     expect((await readLauncherSettings(base)).settings.idleMinutes).toBe(30);
@@ -176,6 +185,26 @@ describe("updateLauncherSettings", () => {
       SettingsNewerError,
     );
     expect(fs.readFileSync(launcherSettingsPath(base), "utf8")).toBe(raw);
+  });
+
+  it("refuses to overwrite a newer file whose start mode this build doesn't know", async () => {
+    const raw = JSON.stringify({ version: 2, startMode: "scheduled", lifetime: "idle" });
+    write(raw);
+    await expect(updateLauncherSettings(base, { idleMinutes: 5 })).rejects.toBeInstanceOf(
+      SettingsNewerError,
+    );
+    expect(fs.readFileSync(launcherSettingsPath(base), "utf8")).toBe(raw);
+  });
+
+  it("a file deleted mid-run merges onto the caller's last good settings, not the defaults", async () => {
+    // No file: the defaults would save `auto` over an Off this process holds.
+    expect(
+      await updateLauncherSettings(
+        base,
+        { idleMinutes: 5 },
+        { startMode: "off", lifetime: "idle", idleMinutes: 10 },
+      ),
+    ).toEqual({ startMode: "off", lifetime: "idle", idleMinutes: 5 });
   });
 
   it.skipIf(process.platform === "win32")("writes the file owner-only (0600)", async () => {

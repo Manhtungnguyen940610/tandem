@@ -821,19 +821,23 @@ describe("IntegrationWizardModal — Tandem's own Claude on the done screen (#21
     wizardStepCell.reset();
   });
 
+  const runningLive = { running: true, remedy: null, standby: null } as const;
   it.each([
-    ["starting", false],
-    ["running", false],
-    [null, true],
+    ["starting", null, false],
+    ["running", null, false],
+    [null, null, true],
+    // The answer timed out; Tandem's Claude is running now, so it may be the session.
+    ["unknown", runningLive, false],
+    ["unknown", null, true],
   ] as const)(
-    "a session after an apply that answered %s: claims 'connected' only when Tandem's own Claude cannot be the session",
-    async (tandemClaude, claims) => {
+    "a session after an apply that answered %s (live %o): claims 'connected' only when Tandem's own Claude cannot be the session",
+    async (tandemClaude, live, claims) => {
       wizardStub.picked = [pickedCode()];
       wizardStub.applyResults = [applied("claude-code-1")];
       wizardStub.tandemClaude = tandemClaude;
       wizardStub.claudeConnected = true;
       const { container } = render(IntegrationWizardModal, {
-        props: { open: true, onClose: vi.fn(), tandemClaudeLive: null },
+        props: { open: true, onClose: vi.fn(), tandemClaudeLive: live },
       });
       await tick();
       const row = q(container, "integration-wizard-reachability-claude-code-1")?.textContent ?? "";

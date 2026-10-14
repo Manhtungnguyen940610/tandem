@@ -90,6 +90,12 @@ describe("tandemClaudeDoneCopy (#2197)", () => {
     expect(tandemClaudeDoneCopy("unknown", stopped)).toBeNull();
   });
 
+  it("an answer that timed out is overruled by a Claude that is running now", () => {
+    expect(tandemClaudeDoneCopy("unknown", { ...stopped, running: true })).toMatch(
+      /^Tandem's own Claude is running/,
+    );
+  });
+
   it("starting, then running: names Tandem's own Claude and where it talks", () => {
     expect(tandemClaudeDoneCopy("starting", stopped)).toMatch(/^Tandem is starting its own Claude/);
     expect(tandemClaudeDoneCopy("starting", { ...stopped, running: true })).toMatch(

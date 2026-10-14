@@ -30,6 +30,7 @@ import {
 import {
   isTransientlyUnavailable,
   LAUNCHER_ERROR_IN_PROGRESS,
+  LAUNCHER_ERROR_OFF_NOT_SAVED,
   LAUNCHER_ERROR_PATH_REJECTED,
   type LauncherSettings,
   type LauncherSettingsPatch,
@@ -1054,6 +1055,11 @@ export function startTandemClaude(): void {
   );
 }
 
+/** An Off that stopped Claude but could not be saved (#2195). Fixed copy,
+ * shared with Settings: the server's own message is never rendered there. */
+export const OFF_NOT_SAVED_MESSAGE =
+  "Tandem's Claude is off now, but Tandem couldn't save that, so it may start again the next time Tandem starts.";
+
 /**
  * The off switch (#2195): save the start mode as `off`, which also stops
  * Tandem's Claude whatever state it is in. Sends ONLY `startMode` — a partial
@@ -1073,7 +1079,7 @@ export function turnOffTandemClaude(): void {
       ) {
         return false;
       }
-      await postLauncherMutation(
+      const code = await postLauncherMutation(
         d,
         API_LAUNCHER_SETTINGS,
         { patch: { startMode: "off" } },
@@ -1083,7 +1089,12 @@ export function turnOffTandemClaude(): void {
           successMessage:
             "Tandem's Claude is off, and stays off until you start it again from the status bar or the chat panel.",
         },
+        { retryOnCode: LAUNCHER_ERROR_OFF_NOT_SAVED },
       );
+      // It did stop; only the saved mode failed.
+      if (code === LAUNCHER_ERROR_OFF_NOT_SAVED) {
+        d.notify("warning", OFF_NOT_SAVED_MESSAGE);
+      }
       return true;
     }),
   );
