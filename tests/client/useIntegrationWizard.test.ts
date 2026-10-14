@@ -1417,6 +1417,22 @@ describe("createIntegrationWizard — refreshDetected (#2199)", () => {
     expect(wizard.picked.map((p) => p.config.kind)).toEqual(["claude-code"]);
   });
 
+  it("ticks only the asked-for kind — a new Desktop install arriving alongside stays unticked", async () => {
+    const desktop2: ExistingMcpInstall = {
+      target: {
+        kind: "claude-desktop",
+        label: "Claude Desktop (Store)",
+        configPath: "/d2/config.json",
+      },
+      status: "ok",
+    };
+    const wizard = wizardDetecting([desktop], [desktop, desktop2, code]);
+    await wizard.begin();
+    wizard.setPicked([]);
+    await wizard.refreshDetected({ pickNewOfKind: "claude-code" });
+    expect(wizard.picked.map((p) => p.config.kind)).toEqual(["claude-code"]);
+  });
+
   it("without pickNewOfKind it ticks nothing", async () => {
     const wizard = wizardDetecting([desktop], [desktop, code]);
     await wizard.begin();
