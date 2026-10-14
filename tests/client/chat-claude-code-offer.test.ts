@@ -9,6 +9,7 @@ import { tick } from "svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChatPanel from "../../src/client/panels/ChatPanel.svelte";
 import {
+  CLAUDE_CODE_OFFER_TEXT,
   claudeCodeOfferEligible,
   showClaudeCodeOffer,
 } from "../../src/client/panels/chat-claude-code-offer";
@@ -104,6 +105,10 @@ describe("ChatPanel — the offer row", () => {
     const el = row(container);
     expect(el).not.toBeNull();
     expect(el?.getAttribute("aria-hidden")).toBeNull();
+    // Announced through the panel's one live region, as the pickup rows are.
+    expect(container.querySelector("[data-testid='chat-pickup-live']")?.textContent).toContain(
+      CLAUDE_CODE_OFFER_TEXT,
+    );
     await fireEvent.click(
       container.querySelector("[data-testid='chat-claude-code-offer-setup']") as HTMLElement,
     );

@@ -308,10 +308,12 @@ shipped and were removed:
   choice, whose radios keep their `settings-modal-tandem-claude-start-*` ids) — only while the
   walkthrough is owed
 - The Claude Code offer for a Claude Desktop setup (#2199):
-  `integration-wizard-claude-code-offer` (carries `data-offer-phase` `idle` / `installed` /
-  `not-detected`) with `-install`, `-error`, `-installed` and `-recheck` — only beside a detected
-  Claude Desktop with no Claude Code; `integration-wizard-check-sign-in` on the done screen, only
-  while the launcher status says sign-in
+  `integration-wizard-claude-code-offer` (carries `data-offer-phase` `offer` / `missing` /
+  `installed` / `not-detected`) with `-install`, `-error`, `-installed` and `-recheck` — `offer`
+  beside a detected Claude Desktop with no Claude Code, `missing` beside a Claude Code card whose
+  program is not installed, `not-detected` only when opened from the chat panel's offer (or after
+  an install that left no card); `integration-wizard-check-sign-in` on the done screen, only while
+  the launcher status says sign-in
 - Start at login (#1463): `integration-wizard-autostart{,-toggle,-error}` — desktop only, and
   hidden entirely when the OS reports no tray, so absence is not a regression signal on its own.
 - Per-target delivery honesty (#1299): `integration-wizard-push-support-{*}` —

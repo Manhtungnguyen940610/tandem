@@ -14,9 +14,14 @@ import { tick } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  PickedIntegration,
+  WizardStep,
+} from "../../src/client/hooks/useIntegrationWizard.svelte";
+import type {
   ClaudeCliPresence,
   ExistingMcpInstall,
 } from "../../src/shared/integrations/contract.js";
+import type { TandemClaudeAfterSetup } from "../../src/shared/launcher/contract.js";
 
 // `presence` is reactive: an install moves it on while the offer is mounted.
 const presenceCell = reactiveCell<ClaudeCliPresence | null>(null);
@@ -63,6 +68,10 @@ const codeInstall = {
 } as ExistingMcpInstall;
 
 const existing: ExistingMcpInstall[] = [];
+// The done screen's inputs, changed while mounted (after the install).
+const stepCell = reactiveCell<WizardStep>("connect");
+const pickedCell = reactiveCell<PickedIntegration[]>([]);
+const tandemClaudeCell = reactiveCell<TandemClaudeAfterSetup | null>(null);
 const refreshDetected = vi.fn(
   async (_opts?: { pickNewOfKind?: string }): Promise<ExistingMcpInstall[]> => [],
 );
@@ -70,14 +79,20 @@ const refreshDetected = vi.fn(
 vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), async (importOriginal) => ({
   ...(await importOriginal()),
   createIntegrationWizard: () => ({
-    step: "connect" as const,
+    get step() {
+      return stepCell.value;
+    },
     detecting: false,
     get existing() {
       return existing;
     },
-    picked: [],
+    get picked() {
+      return pickedCell.value;
+    },
     applyResults: [],
-    tandemClaude: null,
+    get tandemClaude() {
+      return tandemClaudeCell.value;
+    },
     errorMessage: null,
     channelRegistered: null,
     keychainUnavailable: false,
@@ -124,6 +139,9 @@ describe("IntegrationWizardModal — the Claude Code offer for a Claude Desktop 
     cliStub.installError = null;
     cliStub.install = vi.fn(async () => "INSTALLED_NOT_ON_PATH" as const);
     cliStub.refetch = vi.fn(async () => {});
+    stepCell.reset();
+    pickedCell.reset();
+    tandemClaudeCell.reset();
     refreshDetected.mockReset();
     refreshDetected.mockImplementation(async () => {
       existing.push(codeInstall);
@@ -278,6 +296,52 @@ describe("IntegrationWizardModal — the Claude Code offer for a Claude Desktop 
     );
     expect(cliStub.refetch).toHaveBeenCalled();
     expect(refreshDetected).toHaveBeenCalledTimes(2);
+  });
+
+  describe("the done screen after an install here", () => {
+    async function installThenApply(
+      tandemClaude: TandemClaudeAfterSetup,
+      props: Record<string, unknown> = {},
+    ) {
+      const r = mount(props);
+      await tick();
+      await fireEvent.click(
+        q(r.container, "integration-wizard-claude-code-offer-install") as HTMLElement,
+      );
+      await waitFor(() =>
+        expect(q(r.container, "integration-wizard-claude-code-offer-installed")).not.toBeNull(),
+      );
+      pickedCell.value = [
+        { id: "claude-code-1", config: { kind: "claude-code" } } as unknown as PickedIntegration,
+      ];
+      tandemClaudeCell.value = tandemClaude;
+      stepCell.value = "done";
+      await tick();
+      return r;
+    }
+    const whatsNext = (c: HTMLElement) =>
+      (q(c, "integration-wizard-whats-next")?.textContent ?? "").replace(/\s+/g, " ");
+
+    it("an answer that timed out points at no line that is not there", async () => {
+      const { container } = await installThenApply("unknown");
+      expect(q(container, "integration-wizard-tandem-claude")).toBeNull();
+      expect(whatsNext(container)).toContain("Claude Desktop works with Tandem as before.");
+      expect(whatsNext(container)).not.toContain("line below");
+    });
+
+    it("a start waiting on sign-in does not say 'talk to Tandem's own Claude'", async () => {
+      const { container } = await installThenApply("starting", {
+        tandemClaudeLive: { running: false, remedy: "sign-in", standby: null },
+        onLauncherRemedy: vi.fn(),
+      });
+      expect(whatsNext(container)).not.toContain("talk to Tandem's own Claude");
+      expect(q(container, "integration-wizard-check-sign-in")).not.toBeNull();
+    });
+
+    it("control: a start that is under way does say it", async () => {
+      const { container } = await installThenApply("starting");
+      expect(whatsNext(container)).toContain("talk to Tandem's own Claude");
+    });
   });
 
   it("opened from the chat panel's offer, it focuses the Install button", async () => {
