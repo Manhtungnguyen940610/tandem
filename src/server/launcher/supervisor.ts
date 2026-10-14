@@ -2278,7 +2278,11 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
           if (greeting?.phase === "pending") greeting.phase = "unanswered";
           // `error*` only: a subtype this build does not know must not leave
           // the greeting owed, or every later spawn would greet again.
-          const errored = parsed.is_error === true || parsed.subtype?.startsWith("error") === true;
+          // `typeof` first: the envelope is the child's untyped JSON, and a
+          // throw here would reach the process's fatal-error handler.
+          const errored =
+            parsed.is_error === true ||
+            (typeof parsed.subtype === "string" && parsed.subtype.startsWith("error"));
           if (!errored) spendGreeting();
         }
 

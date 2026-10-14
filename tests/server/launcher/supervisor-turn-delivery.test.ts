@@ -3072,6 +3072,16 @@ describe("#2197 — the one-time greeting", () => {
     expect(g.markDone).toHaveBeenCalled();
   });
 
+  it("a malformed subtype on the greeting's result is survived, not thrown", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: 42 });
+    await settle();
+    expect(g.markDone).toHaveBeenCalled();
+    expect(sup.status().running).toBe(true);
+  });
+
   it("a crash before the greeting turn ends: the crash restart does not greet again", async () => {
     const g = greetingSeam();
     const { sup } = makeSupervisor(g.extra);
