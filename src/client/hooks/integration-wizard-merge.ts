@@ -239,7 +239,9 @@ export function buildSaveFile(input: BuildSaveInput): BuildSaveOutput {
       ...(keepsDefault ? { defaultIntegrationId: saved.defaultIntegrationId } : {}),
     },
     applyIds: picked.map((p) => p.id),
-    superseded,
+    // Never one the new file still references: a hand-edited file can share a
+    // ref between records, and deleting it would orphan the other one.
+    superseded: superseded.filter((ref) => !refsOf(integrations).has(ref)),
     stale,
   };
 }

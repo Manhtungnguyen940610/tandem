@@ -257,9 +257,10 @@ function reachabilityStatusFor(id: string): ReachabilityStatus | null {
 }
 
 // `/health.hasSession` counts every MCP session, Tandem's own background
-// Claude included (#2197). While the Apply started it (or it was running), a
-// session proves nothing about the user's own Claude, so the screen does not
-// claim "connected" and keeps the restart-and-/mcp guidance.
+// Claude included (#2197). While the Apply started it (or it was running, or
+// its answer timed out — `unknown` — with it running now), a session proves
+// nothing about the user's own Claude, so the screen does not claim
+// "connected" and keeps the restart-and-/mcp guidance.
 // Nor when this wizard just installed the Claude Code it applied (#2199): the
 // session it sees is the user's Claude Desktop, never a Claude Code that has
 // not signed in.
@@ -270,6 +271,7 @@ const userClaudeConnected = $derived(
   reachability.claudeConnected &&
     wizard.tandemClaude !== "starting" &&
     wizard.tandemClaude !== "running" &&
+    tandemClaudeLive?.running !== true &&
     !installedHereAndApplied,
 );
 

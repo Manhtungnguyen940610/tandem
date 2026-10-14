@@ -152,7 +152,7 @@ export function tandemClaudeDoneCopy(
   initial: TandemClaudeAfterSetup | null,
   live: TandemClaudeLive | null,
 ): string | null {
-  if (initial === null || initial === "unknown") return null;
+  if (initial === null) return null;
   // Held copy, shared by an Apply that held and one whose start has since
   // settled into a standby (an idle stop while the screen is open).
   const heldLine = (): string => {
@@ -171,19 +171,21 @@ export function tandemClaudeDoneCopy(
   };
   // Whatever the Apply answered, a Claude that is running now is the truth.
   if (live?.running) {
-    return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there.";
+    return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there, unless Solo mode is on.";
   }
   // Next, whatever the Apply answered (#2199): a Claude Code that runs but is
   // not signed in is the one thing still in the way, and the step is the
   // user's. Ahead of the switch, so an `other-ai` or `held` answer that a
   // later Start overtook does not keep its stale line.
   if (tandemClaudeNeedsSignIn(initial, live)) return TANDEM_CLAUDE_SIGN_IN_LINE;
+  // The launcher's answer timed out, and nothing since says it is running.
+  if (initial === "unknown") return null;
   if (initial === "starting" || initial === "running") {
     if (live?.standby) return heldLine();
     if (live?.remedy && live.remedy !== "start") {
       return "Tandem's own Claude couldn't start. The status bar shows what to do.";
     }
-    return "Tandem is starting its own Claude in the background. Open the chat panel to talk to it — on a first run it says hello there.";
+    return "Tandem is starting its own Claude in the background. Open the chat panel to talk to it — on a first run it says hello there, unless Solo mode is on.";
   }
   switch (initial) {
     case "held":

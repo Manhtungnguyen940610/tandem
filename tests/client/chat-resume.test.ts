@@ -75,6 +75,19 @@ describe("chatResume", () => {
     },
   );
 
+  it("the licence refusing the AI: never 'starting', and never a Start the server would refuse", () => {
+    // The standby still reads as it did; the licence lapsed since the send.
+    expect(
+      chatResume({ at: AT, from: "off" }, { ...base, standby: "off", remedy: "ai-off" }),
+    ).toEqual({ kind: "failed", remedy: "ai-off" });
+    expect(
+      chatResume(
+        { at: AT, from: "idle" },
+        { ...base, standby: "idle", remedy: "ai-off", now: AT + RESUME_GRACE_MS },
+      ),
+    ).toEqual({ kind: "failed", remedy: "ai-off" });
+  });
+
   it("a start whose status read failed (raw restartPending, fresh gate down) is still resuming", () => {
     // standby kept, remedy null because the raw status still says restartPending.
     expect(

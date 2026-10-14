@@ -289,10 +289,14 @@ export function parseLauncherSettings(raw: unknown): LauncherSettings | null {
 export interface LauncherSettingsResponse {
   settings: LauncherSettings;
   readOnly?: true;
-  /** The file exists but could not be read, so `settings` is the fallback
-   * Tandem is running by (waiting for Start), not a choice anyone saved. A
-   * save rewrites the file. */
+  /** The file exists but could not be read. `settings` is then what Tandem's
+   * Claude is running by: the supervisor's last good read when it has one
+   * (`keptLastGood`), else the fallback (waiting for Start). Not a saved
+   * choice either way; a save rewrites the file. */
   unreadable?: true;
+  /** With `unreadable`: `settings` are the ones Tandem last read, still in
+   * effect, rather than the fallback. */
+  keptLastGood?: true;
 }
 
 /** Loopback-only side-channel for bundled-skill refresh failures. The user
@@ -402,6 +406,10 @@ export const LAUNCHER_ERROR_UNLICENSED = "LAUNCHER_UNLICENSED";
  * written by a newer Tandem (#2195). Answered 409 rather than overwriting
  * fields this build cannot see. */
 export const LAUNCHER_ERROR_SETTINGS_NEWER = "LAUNCHER_SETTINGS_NEWER";
+/** A switch to `off` that stopped Tandem's Claude but could not save the mode
+ * (a newer Tandem's file, a failed write) (#2195). Answered 409 so the caller
+ * says "off now, not saved" rather than "couldn't turn off". */
+export const LAUNCHER_ERROR_OFF_NOT_SAVED = "LAUNCHER_OFF_NOT_SAVED";
 
 /** Marker substring the supervisor embeds in the "binary not found" throw and
  * the launcher route matches on to map it to `LAUNCHER_ERROR_REAPER_NOT_FOUND`.

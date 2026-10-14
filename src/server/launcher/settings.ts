@@ -70,12 +70,18 @@ export function launcherSettingsPath(base: string): string {
   return path.join(base, LAUNCHER_SETTINGS_FILE_NAME);
 }
 
+/** What an unreadable file — or a newer one's unknown mode — reads as. */
+const FALLBACK_START_MODE = "on-click" as const;
+
 function fallback(reason: string, err?: unknown): LauncherSettingsRead {
   console.error(
     `[Launcher] launcher-settings.json is unusable (${reason}) — Tandem's Claude will wait for Start`,
     ...(err === undefined ? [] : [err]),
   );
-  return { source: "fallback", settings: { ...DEFAULT_LAUNCHER_SETTINGS, startMode: "on-click" } };
+  return {
+    source: "fallback",
+    settings: { ...DEFAULT_LAUNCHER_SETTINGS, startMode: FALLBACK_START_MODE },
+  };
 }
 
 /** Read the settings. Never throws — see the module header for what each
@@ -112,14 +118,17 @@ export async function readLauncherSettings(base: string): Promise<LauncherSettin
   if (typeof r.version !== "number" || !Number.isInteger(r.version) || r.version < 1) {
     return fallback("no valid version");
   }
+  const newer = r.version > LAUNCHER_SETTINGS_VERSION;
   // The start mode is the field whose wrong default costs most, so an invalid
-  // one is a fallback rather than a silently defaulted field.
-  if (!isLauncherStartMode(r.startMode)) return fallback("no valid startMode");
+  // one is a fallback rather than a silently defaulted field — except in a
+  // newer Tandem's file, where it may be a mode this build doesn't know: that
+  // reads as the fallback's mode but stays `newer`, so nothing writes over it.
+  if (!isLauncherStartMode(r.startMode) && !newer) return fallback("no valid startMode");
   return {
     source: "file",
-    newer: r.version > LAUNCHER_SETTINGS_VERSION,
+    newer,
     settings: {
-      startMode: r.startMode,
+      startMode: isLauncherStartMode(r.startMode) ? r.startMode : FALLBACK_START_MODE,
       lifetime: isLauncherLifetime(r.lifetime) ? r.lifetime : DEFAULT_LAUNCHER_SETTINGS.lifetime,
       idleMinutes: isLauncherIdleMinutes(r.idleMinutes)
         ? r.idleMinutes
@@ -167,8 +176,10 @@ export function updateLauncherSettings(
   return withSettingsLock(async () => {
     const current = await readLauncherSettings(base);
     if (current.source === "file" && current.newer) throw new SettingsNewerError();
+    // Not only an unreadable file: one deleted mid-run reads as the defaults,
+    // which would save `auto` over an Off this process is honouring.
     const underneath =
-      current.source === "fallback" && whenUnreadable ? whenUnreadable : current.settings;
+      current.source !== "file" && whenUnreadable ? whenUnreadable : current.settings;
     const next: LauncherSettings = { ...underneath, ...patch };
     await writeLauncherSettings(base, next);
     return next;

@@ -128,9 +128,16 @@ whether another AI session is attached — the same presence fact `/health`'s lo
 non-loopback caller by hand and has no origin gate: a browser sends no `Origin` on a same-origin
 GET (measured against Chromium, 2026-10-13), so the gate would refuse the npm build's own editor,
 and the read has no side effect for it to protect. For the same reason `GET /api/launcher/nonce`
-also admits a request with no `Origin` when `Sec-Fetch-Site: same-origin` — a header a page cannot
-set; a cross-site `<img>` probe says `cross-site` and is still refused, so it cannot rotate the
-nonce. Before this, every launcher action in the npm build failed at the nonce. `startMode: "off"`
+also admits a request with no `Origin` when it is a script's own same-origin `fetch()`:
+`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Dest: empty` and mode `cors` or `same-origin`, headers a
+page cannot set. A cross-site `<img>` probe says `cross-site` and is refused; a **same-origin**
+`<img>`, iframe or link — which a document opened in the npm build's editor can make, because its
+CSP allows `img-src 'self'` — says `same-origin` but carries an `image`/`iframe`/`document`
+destination and is refused too, so document content cannot rotate the nonce between the client's
+GET and its POST. Before this, every launcher action in the npm build failed at the nonce. With no
+`Origin` to check on these two GETs, DNS rebinding against them rests on the `Host` check
+(`isHostAllowed` in `createApiMiddleware`) alone; nothing a rebinding page could read or rotate here
+reaches a launcher action, whose POSTs still need an allowlisted `Origin` and the nonce. `startMode: "off"`
 is a preference, not a control: `TANDEM_DISABLE_LAUNCHER=1` is the kill switch. Since #2196 a chat
 message, or a user's reply on a Claude-authored thread, starts Tandem's Claude from Off too (and saves the
 mode as `on-click`, as a Start does) unless another AI session is attached; anyone who can write those

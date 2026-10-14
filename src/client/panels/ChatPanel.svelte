@@ -170,6 +170,11 @@ const pickupKind = $derived(pickup?.kind ?? null);
 const claudeCodeOffer = $derived(
   showClaudeCodeOffer(claudeCodeOfferEligible, messages.length, pickup),
 );
+// The primitive, for the scroll effect: `chatResume` returns a new object on
+// every recompute, and an effect reading the object would scroll a reader who
+// scrolled up back down on a change that moved nothing.
+const resumeKind = $derived(tandemClaudeResume?.kind ?? null);
+const greetingLateShown = $derived(tandemClaudeGreetingLate != null);
 
 // Tick only while a row is showing in a panel that is not hidden, so the elapsed
 // count moves and the age cap can retire the row. Keyed on the primitive kind, so
@@ -196,8 +201,8 @@ $effect(() => {
   // "waiting" the chain would short-circuit past it, and the offer row that
   // joins it at the stall threshold would land below the fold.
   const offer = claudeCodeOffer;
-  let kind: string | null = tandemClaudeResume?.kind ?? null;
-  if (kind === null && tandemClaudeGreetingLate) kind = "greeting";
+  let kind: string | null = resumeKind;
+  if (kind === null && greetingLateShown) kind = "greeting";
   kind ??= pickupKind ?? (offer ? "offer" : null);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);

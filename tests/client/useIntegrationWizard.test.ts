@@ -1244,6 +1244,31 @@ describe("createIntegrationWizard — the saved setup (#2198)", () => {
     expect(s.deletedRefs).toEqual([freshRef]);
   });
 
+  it("a replaced token's saved ref is deleted only after the new file is persisted", async () => {
+    const s = server();
+    const order: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/api/integrations") && init?.method === "POST") {
+        order.push("persist");
+      }
+      return s.fetchFn(input, init);
+    }) as unknown as typeof fetch;
+    const keychainBackend = {
+      set: async () => ({ status: "ok" as const }),
+      delete: async (ref: string) => {
+        order.push(`delete ${ref}`);
+      },
+    } as never;
+    const wizard = createIntegrationWizard({ fetchFn, keychainBackend });
+    await wizard.begin();
+    const card = wizard.picked[0];
+    if (!card) throw new Error("no card");
+    await wizard.submitSecret(card, "fresh-token");
+    flushSync();
+    await wizard.save();
+    expect(order).toEqual(["persist", "delete cc-saved-ref"]);
+  });
+
   it("save keeps what it does not own and applies only the picked card", async () => {
     const s = server();
     const wizard = createIntegrationWizard({

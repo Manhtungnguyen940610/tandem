@@ -1969,6 +1969,11 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
     });
   });
 
+  /**
+   * #1521: the licence refusal ranks FIRST. Solo is a privacy choice, the
+   * refusal is a capability fact, and every other CTA would be refused by the
+   * server. Once it clears, an `unlicensed` lastError maps back to Restart.
+   */
   describe("licence refusal (aiNotice)", () => {
     const stoppedWith = (lastError?: string) => () =>
       mkResponse({ available: true, running: false, ...(lastError ? { lastError } : {}) });
@@ -2015,6 +2020,9 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().chip).toBeNull();
       expect(on.get().state).toBe("booting");
+      // The ungated remedy waits too, or the chat panel's rows would offer a
+      // Restart the server answers 403 (#2196).
+      expect(on.get().launcherRemedy).toBeNull();
       expect(refreshLicence).toHaveBeenCalledTimes(1);
 
       // The re-read lands and the licence still admits AI; the launcher still
@@ -2023,6 +2031,7 @@ describe("createAiReadiness — Tandem's Claude (launcher facts)", () => {
       await settle();
       expect(on.get().state).toBe("stopped");
       expect(on.get().chip).toBe("restart");
+      expect(on.get().launcherRemedy).toBe("restart");
       expect(refreshLicence).toHaveBeenCalledTimes(1);
     });
 
