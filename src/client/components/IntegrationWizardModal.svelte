@@ -275,7 +275,13 @@ const userClaudeConnected = $derived(
 
 // Adapt the "what's next" guidance to the reachability outcome.
 const whatsNext = $derived.by(
-  (): "connected" | "unreachable" | "stdio-only" | "tandem-claude" | "default" => {
+  ():
+    | "connected"
+    | "unreachable"
+    | "stdio-only"
+    | "tandem-claude"
+    | "installed-here"
+    | "default" => {
     const rows = reachability.results;
     const hasHttp = rows.some(
       (r) => r.status === "reachable" || r.status === "unreachable" || r.status === "verifying",
@@ -286,11 +292,10 @@ const whatsNext = $derived.by(
     // Installed here for Tandem's own Claude, which the Apply is starting
     // (#2199): "restart Claude Code and run /mcp" is advice for a terminal
     // session this user never had. Any other answer has its own line below.
-    if (
-      installedHereAndApplied &&
-      (wizard.tandemClaude === "starting" || wizard.tandemClaude === "running")
-    ) {
-      return "tandem-claude";
+    if (installedHereAndApplied) {
+      return wizard.tandemClaude === "starting" || wizard.tandemClaude === "running"
+        ? "tandem-claude"
+        : "installed-here";
     }
     return "default";
   },
@@ -629,7 +634,14 @@ const offerView = $derived.by((): "offer" | "missing" | "installed" | "not-detec
   if (offerPhase !== "idle") return offerPhase;
   const missing = cliStatus.presence === "NOT_INSTALLED" || offerBusy;
   if (missing) return hasClaudeCodeInstall ? "missing" : hasClaudeDesktopInstall ? "offer" : null;
-  if (cliStatus.presence !== null && hasClaudeDesktopInstall && !hasClaudeCodeInstall) {
+  // Only when asked for, from the chat panel's offer (#2199 review): unasked,
+  // it would be an install prompt for something the user did not raise.
+  if (
+    focusClaudeCodeOffer &&
+    cliStatus.presence !== null &&
+    hasClaudeDesktopInstall &&
+    !hasClaudeCodeInstall
+  ) {
     return "not-detected";
   }
   return null;
@@ -1252,10 +1264,11 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                   </div>
                 {:else}
                   {#if offerView === "missing"}
-                    <p class="iw-offer-title">Claude Code isn't on this computer</p>
+                    <p class="iw-offer-title">Tandem can't find the Claude Code program</p>
                     <p class="iw-hint-text">
-                      Tandem can't find the Claude Code program, so it can't start its own
-                      Claude. Install it again — a small, signed download from Anthropic.
+                      So it can't start its own Claude. A copy installed with Homebrew or npm may
+                      work in your terminal and still be out of Tandem's sight; installing it here
+                      (a small, signed download from Anthropic) puts it where Tandem looks.
                     </p>
                   {:else}
                     <p class="iw-offer-title">Want answers right here in Tandem?</p>
@@ -1425,6 +1438,9 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 {:else if whatsNext === "tandem-claude"}
                   Open the chat panel to talk to Tandem's own Claude. Claude Desktop works with
                   Tandem as before.
+                {:else if whatsNext === "installed-here"}
+                  Claude Desktop works with Tandem as before. The line below says what happened to
+                  Tandem's own Claude.
                 {:else}
                   Restart Claude Code, then type <code class="iw-code-inline">/mcp</code> to verify —
                   or just ask Claude to open a document.

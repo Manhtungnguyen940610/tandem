@@ -597,9 +597,10 @@ async function exportChat() {
       </div>
     {/if}
     {#if claudeCodeOffer}
-      <!-- Static and NOT aria-hidden (#2199): unlike the status rows above, it
-           is the only copy of its text and holds its own buttons, so it is
-           read in place rather than announced. -->
+      <!-- NOT aria-hidden (#2199): unlike the status rows above, it holds its
+           own buttons, so it must stay reachable in place. Its text is ALSO
+           announced through the live region below when it appears, so a
+           screen-reader user hears that it arrived. -->
       <div
         class="chat-status-row chat-status-row-wrap"
         data-testid="chat-claude-code-offer"

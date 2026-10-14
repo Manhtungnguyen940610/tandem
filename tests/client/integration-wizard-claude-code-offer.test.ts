@@ -180,9 +180,14 @@ describe("IntegrationWizardModal — the Claude Code offer for a Claude Desktop 
     expect(q(container, "integration-wizard-claude-code-offer-install")).not.toBeNull();
   });
 
-  it("installed but never run (no card yet): the run-it-once step, not a dead end", async () => {
+  it("installed but never run (no card yet), arriving from the chat offer: the run-it-once step, not a dead end", async () => {
     cliStub.presence = "INSTALLED_ON_PATH";
-    const { container } = mount();
+    const unasked = mount();
+    await tick();
+    // Unasked, nothing: it would be an install prompt nobody raised.
+    expect(q(unasked.container, "integration-wizard-claude-code-offer")).toBeNull();
+    unasked.unmount();
+    const { container } = mount({ focusClaudeCodeOffer: true });
     await tick();
     expect(
       q(container, "integration-wizard-claude-code-offer")?.getAttribute("data-offer-phase"),
