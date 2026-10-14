@@ -380,6 +380,7 @@ describe("launcher routes answer a licence refusal with 403 (#1521)", () => {
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
       updateSettings: async (patch) => ({ ...DEFAULT_LAUNCHER_SETTINGS, ...patch }),
+      appliedSettings: () => null,
       status: () => ({ running: false }),
       ...overrides,
     };

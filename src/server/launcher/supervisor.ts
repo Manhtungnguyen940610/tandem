@@ -472,6 +472,9 @@ export interface Supervisor {
    * newer Tandem wrote.
    */
   updateSettings(patch: LauncherSettingsPatch): Promise<LauncherSettings>;
+  /** The settings this supervisor last read or saved successfully, or null
+   * before any. What it is acting on while the file cannot be read. */
+  appliedSettings(): LauncherSettings | null;
 }
 
 /** What `relaunch` / `startFresh` did. `no-integration`: the plan found no
@@ -2615,7 +2618,14 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
    * cost of a failed write is that the next launch reads the old mode. */
   async function persistStartMode(mode: LauncherSettings["startMode"]): Promise<void> {
     try {
-      lastGoodSettings = await updateLauncherSettings(opts.integrationsBase, { startMode: mode });
+      // Over an unreadable file, the fields this does not touch come from the
+      // last good read, as in `updateSettings`: a Start from Off must not also
+      // save the default lifetime over the user's "stop when idle".
+      lastGoodSettings = await updateLauncherSettings(
+        opts.integrationsBase,
+        { startMode: mode },
+        lastGoodSettings,
+      );
     } catch (err) {
       console.error(`[Launcher] Could not save start mode "${mode}":`, err);
     }
@@ -2845,6 +2855,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     licenceRefusal,
     startByUser,
     updateSettings,
+    appliedSettings: () => (lastGoodSettings ? { ...lastGoodSettings } : null),
   };
 }
 
