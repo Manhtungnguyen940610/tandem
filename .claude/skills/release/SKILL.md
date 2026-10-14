@@ -106,10 +106,11 @@ other six.
    prose — all expected.)
 
    **Read the survivors, don't just count them — they are not all bugs.**
-   Expect two kinds: the surfaces themselves (before you bump them; surface
-   7's `"ref": "v<old-version>"` is SUPPOSED to survive until step 10); and
-   source comments, which the exclusions do NOT hide —
-   `src/server/license/gate-flag.ts` carries a `Default: false (v<version>)`
+   Expect three kinds: the surfaces themselves (before you bump them; surface
+   7's `"ref": "v<old-version>"` is SUPPOSED to survive until step 10);
+   deliberate prose naming a version as history (this skill's own dated
+   plugin-install measurement — leave it alone); and source comments,
+   which the exclusions do NOT hide — `src/server/license/gate-flag.ts` carries a `Default: false (v<version>)`
    marker. Judge each one; a straggler is a hit that still *pins* the old
    version rather than describing it.
 
@@ -265,8 +266,8 @@ other six.
 
 9. Update the project memory SHIPPED entry (per the archive rotation
    discipline). CLAUDE.md carries no version stamp; edit its **Status**
-   section only if a flag flip, a dark system or a v1.0 blocker changed in
-   this release.
+   section only if a flag flip, a dark system, a v1.0 blocker or the MCP tool
+   counts changed in this release.
 
 10. Bump surface 7 in its own PR: set the `tandem` entry's `source.ref` in
    `.claude-plugin/marketplace.json` to `v<version>`. Only after all three hold:
