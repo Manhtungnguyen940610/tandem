@@ -300,7 +300,9 @@ export function registerNavigationTools(server: McpServer): void {
       "other Unicode spaces (e.g. non-breaking) as ordinary spaces. The returned text is the " +
       "document's actual characters. A miss returns INVALID_RANGE; the error message reports how " +
       "many occurrences exist. The range can be passed to tandem_edit or tandem_comment unless it " +
-      'includes heading markup such as "## ", which they refuse. It describes the document at call ' +
+      'starts or ends in heading markup such as "## " (including a range ending at the newline before a ' +
+      "heading), or, for tandem_edit or a suggestion, runs through it — they refuse those. It describes " +
+      "the document at call " +
       "time — pass the returned text as textSnapshot on the follow-up call to detect concurrent edits.",
     {
       pattern: z.string().describe("Literal text to find (not a regex; case-sensitive)"),

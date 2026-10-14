@@ -131,7 +131,7 @@ const NAMES_ONLY_REAL_TOOLS = ["AGENTS.md", "docs/mcp-tools.md"];
 
 describe("tool reference docs name only registered tools", () => {
   it.each(NAMES_ONLY_REAL_TOOLS)("%s names no unregistered tandem_* tool", (relative) => {
-    const named = new Set([...read(relative).matchAll(/\btandem_[A-Za-z]+\b/g)].map((m) => m[0]));
+    const named = new Set([...read(relative).matchAll(/\btandem_\w+\b/g)].map((m) => m[0]));
     const unknown = [...named].filter((name) => !REGISTERED.has(name));
     expect(unknown, `${relative} names tools that are not registered in src`).toEqual([]);
   });

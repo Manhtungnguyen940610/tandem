@@ -694,16 +694,18 @@ export function registerDocumentTools(server: McpServer): void {
     "tandem_edit",
     "Replace the text in [from, to) with newText. Offsets are flat offsets from tandem_getTextContent, " +
       "tandem_search, tandem_resolveRange or tandem_getOutline (includeBlocks). from === to inserts newText " +
-      "at that point — the only way to insert mid-document; omit textSnapshot there (it is refused with " +
+      "at that point — the only way to insert text mid-document; omit textSnapshot there (it is refused with " +
       "INVALID_ARGUMENT). A range inside one block (including one list item, table cell or quoted " +
-      "paragraph) edits that block. A range whose ends are in different top-level blocks merges them into " +
-      "one and deletes every block wholly inside it; if either end is inside a list, blockquote or table " +
-      "it returns INVALID_RANGE naming the two ranges to edit separately. A range whose start, end or " +
-      'interior overlaps heading markup such as "## " returns INVALID_RANGE — a to at the first character ' +
-      "of that markup counts, so end the range before the newline preceding a heading — split the edit at " +
-      "the heading. newText is inserted literally, never parsed as Markdown (use tandem_appendContent or " +
+      "paragraph) edits that block. A range whose ends are in different top-level blocks merges " +
+      "them into one and deletes every block wholly inside it; a range spanning two blocks where " +
+      "either end is inside a list, blockquote or table (including two items of one list) returns " +
+      "INVALID_RANGE naming the two ranges to edit separately. A range whose start, end or " +
+      'interior overlaps heading markup such as "## " returns INVALID_RANGE; split the edit at the ' +
+      "heading. A to at the first character of that markup counts as overlapping, so end the range " +
+      "before the newline that precedes a heading. newText is inserted literally, never parsed as Markdown (use tandem_appendContent or " +
       "tandem_editList for new block structure); a newline in it is refused with INVALID_ARGUMENT in a " +
-      "plain-text (.txt) document and otherwise stays a literal line break inside the same block. Returns " +
+      "plain-text (.txt) document and otherwise stays a literal line break inside the same " +
+      "block (a heading saves it as a space). Returns " +
       "READ_ONLY on a read-only document and EMPTY_DOCUMENT on an empty one.",
     {
       // `.int()` here rather than `.nonnegative()`: `validateRange` owns the
@@ -1336,7 +1338,7 @@ export function registerDocumentTools(server: McpServer): void {
       "disk write is skipped the call still succeeds, with saved: false, a machine-readable " +
       "`reason` and only the session saved — for example upload (an uploaded document has no " +
       "path), read-only, UNSUPPORTED_FORMAT (e.g. .html), FILE_MODIFIED (the file changed on disk " +
-      "since Tandem last wrote it) or SAVE_IN_PROGRESS. A document with an unresolved external-change " +
+      "since Tandem last loaded or wrote it) or SAVE_IN_PROGRESS. A document with an unresolved external-change " +
       "conflict returns an EXTERNAL_CONFLICT error instead. The file on disk is never silently overwritten.",
     {
       documentId: z
@@ -1600,7 +1602,7 @@ export function registerDocumentTools(server: McpServer): void {
 
   server.tool(
     "tandem_close",
-    "Close a document's tab (the active document when documentId is omitted); another open document becomes active. Closing does not save: edits not yet written by tandem_save or autosave are discarded (unless an external-change conflict is pending, whose session is kept), and a scratchpad's content is gone. Annotations on an on-disk file are kept and return when it is reopened.",
+    "Close a document's tab (the active document when documentId is omitted); if it was the active document, another open document, if any, becomes active. Closing does not save: edits not yet written by tandem_save or autosave are discarded (unless an external-change conflict is pending, whose session is kept), and a scratchpad's content is gone. Annotations on an on-disk file are kept and return when it is reopened.",
     {
       documentId: z
         .string()

@@ -321,13 +321,15 @@ export function registerAnnotationTools(server: McpServer): void {
     "tandem_getAnnotations",
     {
       description:
-        'Read the annotations on a document, optionally filtered by author/type/status, each comment with its visible replies. Only records shared with you are returned. User notes are private and excluded, counted in notesExcluded (including imported comments awaiting user promotion; promoted ones surface as user comments). Every other record the user has not shared is excluded too and counted in privateExcluded — user highlights are always private, so type: "highlight" returns nothing. In solo mode the user\'s own annotations and replies are also held back. A record whose anchor no longer matches its text carries anchor: "degraded" or "failed". For only what is new since your last poll, use tandem_checkInbox.',
+        'Read the annotations on a document, optionally filtered by author/type/status, each comment with its visible replies. Only records shared with you are returned. User notes are private and excluded, counted in notesExcluded (including imported comments awaiting user promotion; promoted ones surface as user comments). Every other record the user has not shared is excluded too and counted in privateExcluded — user highlights are always private, so type: "highlight" returns only a highlight Claude authored (such as the tutorial seed). In solo mode the user\'s own annotations and replies are also held back. A record whose anchor no longer matches its text carries anchor: "degraded" or "failed". For only what is new since your last poll, use tandem_checkInbox.',
       inputSchema: {
         author: AuthorSchema.optional().describe("Filter by author"),
         type: z
           .enum(["highlight", "comment"])
           .optional()
-          .describe('Filter by type ("highlight" always returns nothing — highlights are private)'),
+          .describe(
+            'Filter by type ("highlight" never returns a user highlight — those are private)',
+          ),
         status: AnnotationStatusSchema.optional().describe("Filter by status"),
         documentId: z
           .string()
@@ -532,7 +534,7 @@ export function registerAnnotationTools(server: McpServer): void {
 
   server.tool(
     "tandem_editAnnotation",
-    "Edit a pending annotation Claude authored: content replaces the comment body, newText sets or replaces its suggestedText. A user-authored or imported record (including a user highlight) returns NOT_OWNED; an accepted or dismissed one returns ANNOTATION_RESOLVED; a private note or private comment, or a newText whose live range overlaps heading markup or no longer resolves, returns INVALID_ARGUMENT.",
+    "Edit a pending annotation Claude authored: content replaces the comment body, newText sets or replaces its suggestedText. A private note or private comment (including an imported comment not yet promoted) returns INVALID_ARGUMENT, checked first; any other record not authored by Claude — a user comment or highlight, or a promoted note or imported comment, which is stored as a user comment — returns NOT_OWNED; an accepted or dismissed one returns ANNOTATION_RESOLVED; a newText whose live range overlaps heading markup or no longer resolves returns INVALID_ARGUMENT.",
     {
       id: z.string().describe("Annotation ID"),
       content: z.string().optional().describe("New comment text"),

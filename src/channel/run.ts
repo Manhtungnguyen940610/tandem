@@ -63,7 +63,7 @@ export async function runChannel(opts: RunChannelOptions = {}): Promise<void> {
         'Events from Tandem arrive as <channel source="tandem-channel" event_type="..." document_id="...">.',
         "These are real-time push notifications of user actions in the collaborative document editor.",
         `Event types: ${TANDEM_EVENT_TYPES.join(", ")},`,
-        `and ${LICENSE_REFUSED_EVENT_TYPE} (a one-time notice that Tandem's licence refused this connection).`,
+        `and ${LICENSE_REFUSED_EVENT_TYPE} (a notice, sent once per refused stretch, that Tandem's licence refused this event stream).`,
         "Chat messages may include a 'selection' field with buffered selection context.",
         "Use your tandem MCP tools (tandem_getTextContent, tandem_comment, tandem_edit, etc.) to act on them.",
         "Reply to chat messages using tandem_reply. Pass document_id from the tag attributes.",

@@ -324,7 +324,7 @@ tandem_edit({ from: 180, to: 193, newText: "$13.1 million" })
 
 **Notes:**
 - Always use `tandem_resolveRange` first to get safe offsets.
-- Newlines in `newText` are inserted as literal characters, not new paragraphs — **in a markdown or `.docx` document. In a plaintext one (`.txt`, `.html`, `.log`, `.csv`, any unknown extension) a newline is REFUSED with `INVALID_ARGUMENT` (#1460).** Those formats spell a paragraph boundary and an intra-paragraph break identically, so a literal newline would save to bytes that reopen as two paragraphs — the document coming back a different shape than the one written. Issue one `tandem_edit` per line instead. (`tandem_appendContent` is not a substitute — it refuses any non-markdown document outright.) The refusal is deliberate rather than a silent split: `newText` is inserted literally and never creates a block, and `RANGE_MOVED`'s retry contract assumes the inserted text stays inside one block.
+- Newlines in `newText` are inserted as literal characters, not new paragraphs — **in a markdown or `.docx` document. In a plaintext one (`.txt`; `.html` is read-only and refused earlier) a newline is REFUSED with `INVALID_ARGUMENT` (#1460).** Those formats spell a paragraph boundary and an intra-paragraph break identically, so a literal newline would save to bytes that reopen as two paragraphs — the document coming back a different shape than the one written. Issue one `tandem_edit` per line instead. (`tandem_appendContent` is not a substitute — it refuses any non-markdown document outright.) The refusal is deliberate rather than a silent split: `newText` is inserted literally and never creates a block, and `RANGE_MOVED`'s retry contract assumes the inserted text stays inside one block.
 - Cross-element edits (spanning multiple paragraphs) are supported but merge into one paragraph.
 - Edits appear instantly in the editor.
 - Read-only documents (uploads, and files opened with `readOnly`) reject edits -- use annotations instead. A disk-opened `.docx` is **not** read-only (#576).
@@ -506,7 +506,7 @@ tandem_status({ text: "Done" })
 
 ### tandem_close
 
-Close a document's tab (the active document if no `documentId` is specified); another open document becomes active. **Closing does not save:** edits not yet written by `tandem_save` or autosave are discarded (unless an external-change conflict is pending, whose session is kept), and a scratchpad's content is gone. Annotations on an on-disk file are kept and return when it is reopened.
+Close a document's tab (the active document if no `documentId` is specified); if it was the active document, another open document, if any, becomes active. **Closing does not save:** edits not yet written by `tandem_save` or autosave are discarded (unless an external-change conflict is pending, whose session is kept), and a scratchpad's content is gone. Annotations on an on-disk file are kept and return when it is reopened.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -655,7 +655,7 @@ Since [#1619](https://github.com/bloknayrb/tandem/issues/1619)/[#1710](https://g
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `author` | enum | no | `user`, `claude`, or `import` |
-| `type` | enum | no | `highlight`, `comment` — `highlight` returns nothing: every highlight is stamped `audience: "private"` (ADR-027) and Claude has no highlight-creating tool, so no outbound highlight exists to return |
+| `type` | enum | no | `highlight`, `comment` — `highlight` never returns a user highlight: every user highlight is stamped `audience: "private"` (ADR-027). Claude has no highlight-creating tool, so the only highlight it can see is a Claude-authored one the server seeded, such as the tutorial highlight on `sample/welcome.md` |
 | `status` | enum | no | `pending`, `accepted`, `dismissed` |
 | `documentId` | string | no | Target document ID (defaults to active document) |
 
