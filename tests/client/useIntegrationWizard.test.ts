@@ -473,6 +473,56 @@ describe("createIntegrationWizard", () => {
     expect(wizard.applyResults).toEqual([{ id: "cc-1", status: "applied" }]);
   });
 
+  it.each([
+    ["a valid value", "starting", "starting"],
+    ["an unknown value", "definitely-started", null],
+    ["no field (older server)", undefined, null],
+  ])("save(): tandemClaude from the apply response — %s (#2197)", async (_l, value, want) => {
+    const wizard = createIntegrationWizard({
+      fetchFn: makeFetchStub([
+        {
+          method: "POST",
+          urlMatch: /\/api\/integrations$/,
+          handler: () => ({
+            status: 200,
+            body: { ok: true, ids: ["cc-1"], confirmationNonce: "n1" },
+          }),
+        },
+        {
+          method: "POST",
+          urlMatch: /\/api\/integrations\/apply$/,
+          handler: () => ({
+            status: 200,
+            body: {
+              results: [{ id: "cc-1", status: "applied" }],
+              nextNonce: "n2",
+              ...(value === undefined ? {} : { tandemClaude: value }),
+            },
+          }),
+        },
+      ]),
+    });
+    wizard.setPicked([
+      {
+        id: "cc-1",
+        config: {
+          kind: "claude-code",
+          id: "cc-1",
+          label: "Claude Code",
+          configPath: "/x",
+          transport: "http",
+          url: "http://127.0.0.1:3479",
+        },
+        hasStoredSecret: false,
+        keychainUnavailable: false,
+      },
+    ]);
+    flushSync();
+    await wizard.save();
+    flushSync();
+    expect(wizard.tandemClaude).toBe(want);
+  });
+
   // --- channelRegistered (WS-B push-vs-polling readout) ---------------------
 
   /** Persist + apply stubs shared by the channelRegistered cases (claude-code,

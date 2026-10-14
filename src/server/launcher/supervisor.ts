@@ -41,14 +41,17 @@ import {
 } from "../../shared/integrations/detect-claude-cli.js";
 import {
   CLAUDE_STREAM_JSON_FLAGS,
+  GREETING_REPLY_WINDOW_MS,
   type LauncherErrorCode,
   type LauncherSettings,
   type LauncherSettingsPatch,
   type LauncherStandby,
   REAPER_NOT_FOUND_MARKER,
+  SUPERVISOR_GREETING_PROMPT,
   SUPERVISOR_INITIAL_PROMPT,
   SUPERVISOR_WAKE_PROMPT,
   serializeUserTurn,
+  type TandemClaudeAfterSetup,
 } from "../../shared/launcher/contract.js";
 import { rejectUnsafeWindowsPrefix } from "../../shared/windows-path-safety.js";
 import { subscribe, unsubscribe, wasForwardedExternally } from "../events/queue.js";
@@ -203,6 +206,32 @@ interface SupervisorOpts {
    * `() => false`, which is today's single-AI behaviour.
    */
   otherAiAttached?: (ownClaudeSessionIds: ReadonlySet<string>) => boolean;
+  /**
+   * The one-time greeting's marker (#2197; `greeting.ts`). `isOwed` is read at
+   * every spawn and MUST stay synchronous (no await in the restart path);
+   * `markDone` runs once the greeting reaches the chat. The default is "never
+   * owed", so no test greets by accident; `index.ts` wires the real file.
+   */
+  greeting?: { isOwed: () => boolean; markDone: () => Promise<void> };
+  /**
+   * Seam onto `tandem_reply` (#2197): `cb` runs whenever a `tandem_reply`
+   * lands a chat message, with the caller's Claude session id, undefined when
+   * its transport sends none (`onTandemReply` in `mcp/awareness.ts`, wired in
+   * `index.ts`; this module must not import the MCP layer). That is how the
+   * supervisor learns the greeting arrived; a reply from a session it did not
+   * spawn is not the greeting. Default: never.
+   */
+  subscribeTandemReply?: (cb: (sessionId: string | undefined) => void) => () => void;
+  /**
+   * True while the user's mode is Solo, or cannot be read (#2197; Bryan,
+   * 2026-10-14): the hello is unasked, and Solo means Claude speaks only when
+   * spoken to, so a spawn in Solo sends its ordinary first turn and the
+   * greeting stays owed for the first spawn in Tandem mode. `index.ts` wires
+   * `readModeState`. The default is "never Solo"; a throw reads as Solo.
+   */
+  greetingHeldBySolo?: () => boolean;
+  /** Override for `GREETING_REPLY_WINDOW_MS`, for tests. */
+  greetingWindowMs?: number;
 }
 
 /**
@@ -464,11 +493,18 @@ export interface Supervisor {
   /** Current state for /api/launcher/status. */
   status(): SupervisorStatus;
   /** Re-read whether a launchable claude-code entry exists, WITHOUT starting
-   * anything (#2180). Called after the setup wizard writes one, so the status
-   * stops reporting `not-configured` without waiting for the next start.
-   * Whether finishing the wizard should also start Tandem's Claude is an open
-   * product question, deliberately not answered here. */
+   * anything (#2180). `startAfterSetup` is what the setup wizard's Apply
+   * calls; this remains for a caller that must not start Claude. */
   refreshConfigured(): Promise<void>;
+  /**
+   * After a setup-wizard Apply that wrote a claude-code entry (#2197): refresh
+   * `configured` and, when nothing is running, the start mode is automatic,
+   * nothing is stopped by choice, the licence admits it and no other AI is
+   * attached, start Tandem's Claude. Resolves with the decision as soon as it
+   * is made — before the spawn finishes — and never rejects; a failure after
+   * that is recorded as `lastError`, where the status shows it.
+   */
+  startAfterSetup(): Promise<TandemClaudeAfterSetup>;
   /**
    * Resume a launcher the licence refused (#1521). Spawns only when no child
    * is alive, a refusal is recorded, no breaker is tripped and the user has
@@ -543,6 +579,8 @@ export type SupervisorStatus =
       /** Only beside `standby` (#2196): a chat message sent now would start
        * Tandem's Claude — no other AI is attached and the licence admits it. */
       startsOnMessage?: true;
+      /** The greeting is late (#2197) — see `LauncherStatus`. */
+      greetingLate?: true;
     }
   | {
       running: true;
@@ -572,6 +610,8 @@ export type SupervisorStatus =
        * resumed under the same UUID. Internal: the status route sends only the
        * derived `attached` boolean. */
       spawnedAt: number;
+      /** The greeting is late (#2197) — see `LauncherStatus`. */
+      greetingLate?: true;
       /** Never set: a running supervisor has, by construction, no pending
        * fatal error. Present as an explicit `undefined` so `status.lastError`
        * type-checks on the un-narrowed union. */
@@ -925,6 +965,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   const idleMinuteMs = opts.idleMinuteMs ?? 60_000;
   const subscribeDuringStandby = opts.subscribeDuringStandby ?? defaultSubscribeDuringGap;
   const otherAiAttached = opts.otherAiAttached ?? (() => false);
+  const greetingMarker = opts.greeting ?? { isOwed: () => false, markDone: async () => {} };
+  const greetingWindowMs = opts.greetingWindowMs ?? GREETING_REPLY_WINDOW_MS;
   /**
    * Why Tandem's Claude is not running when nothing went wrong (#2195), or
    * undefined. Set by `stopByChoice` and by a start the settings held back;
@@ -1086,6 +1128,78 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
   let shuttingDown = false;
 
   /**
+   * The one-time greeting in this process (#2197), or null before one is
+   * written. `pending` from the moment the turn is written; `answered` once a
+   * `tandem_reply` from this supervisor's own child lands (and the marker is
+   * then marked done);
+   * `unanswered` if the turn ends, or its child exits, with no message. A
+   * later reply from the child in this process still counts as `answered`:
+   * the user has heard from Tandem's Claude, and the note should go. A
+   * process greets at most once successfully (`greetedThisProcess`), so a
+   * marker write that failed cannot greet again on the next spawn. Never in
+   * Solo (`greetingHeldBySolo`): that spawn's first turn is the ordinary one,
+   * and the greeting stays owed.
+   */
+  let greeting: { phase: "pending" | "answered" | "unanswered"; sentAt: number } | null = null;
+  let greetedThisProcess = false;
+  /** A greeting turn's child crashed before the turn ended: no further greeting
+   * in this process, so a crash loop cannot re-send it on every restart. The
+   * next Tandem launch tries again (the marker is still owed). */
+  let greetingCrashedThisProcess = false;
+  /** Spend the greeting: never again in this process, and `done` on disk.
+   * Idempotent — a turn's end and its reply can both get here. */
+  function spendGreeting(): void {
+    if (greetedThisProcess) return;
+    greetedThisProcess = true;
+    greetingMarker.markDone().catch((err: unknown) => {
+      console.error("[Launcher] Could not record that the greeting was sent:", err);
+    });
+  }
+  // A reply carrying another session's id is that session's, not the
+  // greeting. One with no id is counted: the header is optional, and a child
+  // that never sends it must not owe its greeting on every spawn.
+  const unsubscribeTandemReply = (opts.subscribeTandemReply ?? (() => () => {}))((sessionId) => {
+    if (greeting === null || greeting.phase === "answered") return;
+    if (sessionId !== undefined && !isOwnChildSession(sessionId)) return;
+    greeting.phase = "answered";
+    unsubscribeTandemReply();
+    spendGreeting();
+  });
+
+  /** Case-folded, as the MCP registry compares Claude session ids: a UUID
+   * may round-trip through the session file in either case. */
+  function isOwnChildSession(sessionId: string): boolean {
+    const key = sessionId.toLowerCase();
+    for (const id of ownChildSessionIds) if (id.toLowerCase() === key) return true;
+    return false;
+  }
+
+  /** Read the marker; any failure reads as not owed (see `greeting.ts`). In
+   * Solo, or a mode that cannot be read, the greeting waits (and stays owed). */
+  function greetingOwedNow(): boolean {
+    if (greetedThisProcess || greetingCrashedThisProcess) return false;
+    try {
+      if (opts.greetingHeldBySolo?.() === true) return false;
+    } catch {
+      return false;
+    }
+    try {
+      return greetingMarker.isOwed();
+    } catch {
+      return false;
+    }
+  }
+
+  /** The hello was asked for and has not reached the chat: its turn ended
+   * without a message, or the window passed. */
+  function greetingLate(): boolean {
+    // A standby is the user's choice (or idle): nothing for the note to fix.
+    if (greeting === null || standby !== undefined) return false;
+    if (greeting.phase === "unanswered") return true;
+    return greeting.phase === "pending" && Date.now() - greeting.sentAt >= greetingWindowMs;
+  }
+
+  /**
    * The standby watch (#2196): unsubscribe fn while armed, else null. Armed
    * exactly while `standby` is set — `setStandby` is the only writer of both —
    * so a chat message (or a user reply on Claude's thread, `isStartWorthy`)
@@ -1170,15 +1284,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
           console.error(`[Launcher] Could not start Claude for the message: ${result.why}`);
         }
       } catch (err) {
-        if (err instanceof LicenseRefusedError) {
-          console.error("[Launcher] Could not start Claude for the message: unlicensed");
-          return;
-        }
-        // A throw from the settings or plan read records nothing on its own;
-        // without this the message would sit unanswered beside a pill that
-        // still offers Start as if nothing had been tried.
-        if (child === null && lastError === undefined) lastError = "spawn-failed";
-        console.error("[Launcher] Could not start Claude for the message:", err);
+        recordStartThrow(err, "Could not start Claude for the message");
       }
     }).finally(() => {
       messageStartQueued = false;
@@ -1717,6 +1823,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
      * flag any more — so it must hand the wake to `wakeOwedAcrossSpawns`
      * directly (#1866). */
     let tornDown = false;
+    /** This spawn wrote the greeting and has not seen its turn end (#2197). */
+    let awaitingGreetingResult = false;
     /** Latched at the FIRST teardown: may a wake owed by this spawn cross to the
      * next one? False when the teardown came from a user `stop()`. Latched rather
      * than read live, because a callback can land after `start()` has already
@@ -1968,6 +2076,16 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       pendingWake = false;
       clearLatch();
       clearIdle();
+      // A child that ends before its greeting turn does (a crash, a stop) has
+      // not greeted anyone. A crash also ends greeting in this process: the
+      // greeting turn may be what crashed it, and the restart must not send it
+      // again (the same reasoning as the crash carry above). A stop we asked
+      // for — the note's own Restart — may try again.
+      if (awaitingGreetingResult) {
+        awaitingGreetingResult = false;
+        if (greeting?.phase === "pending") greeting.phase = "unanswered";
+        if (!stopRequested) greetingCrashedThisProcess = true;
+      }
       // Identity-guarded: only drop the shared handle if it still points at
       // THIS spawn. A late exit from a superseded process must not clear the
       // successor's registration and leave it unreleasable by stopInternal.
@@ -2010,13 +2128,31 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // wakes on the next piece of Tandem activity. That is the whole reason the
     // resume path is not inert: before this subscription existed it depended on
     // channel push, which finding 2 of the spike shows does not arrive.
+    // The one-time greeting (#2197) takes the place of this spawn's first turn:
+    // the bootstrap when fresh, the wake / sign-in re-check when resumed. It
+    // asks for `tandem_checkInbox` first, so it discharges an owed wake too.
+    const greetNow = greetingOwedNow();
+    // A spawn that does not greet retires the last greeting's note: the user
+    // restarted (the note's own advice) or Claude came back by itself, and an
+    // old turn's "hasn't said hello" no longer describes this child.
+    if (!greetNow) greeting = null;
+    const writeGreeting = (): void => {
+      if (!sendTurn(SUPERVISOR_GREETING_PROMPT)) return;
+      greeting = { phase: "pending", sentAt: Date.now() };
+      awaitingGreetingResult = true;
+      wakeOwedAcrossSpawns = false;
+    };
     if (!plan.resuming) {
       // The bootstrap prompt already tells Claude to call `tandem_checkInbox`,
       // which surfaces anything that accumulated while nothing was listening —
       // so it discharges any owed wake by itself. That holds only while the
       // prompt asks Claude to answer replies as well as chat and comments: a
       // reply on one of Claude's threads can be what the wake was owed for.
-      sendTurn(SUPERVISOR_INITIAL_PROMPT);
+      if (greetNow) {
+        writeGreeting();
+      } else {
+        sendTurn(SUPERVISOR_INITIAL_PROMPT);
+      }
       wakeOwedAcrossSpawns = false;
     } else {
       // A re-check owed by a previous Tandem run (see
@@ -2024,7 +2160,9 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       // clears the persisted copy too.
       if (plan.loginRecheckOwed) loginRecheckOwed = true;
     }
-    if (plan.resuming && (wakeOwedAcrossSpawns || loginRecheckOwed)) {
+    if (plan.resuming && greetNow) {
+      writeGreeting();
+    } else if (plan.resuming && (wakeOwedAcrossSpawns || loginRecheckOwed)) {
       // `loginRecheckOwed` (#1780): a resumed CLI is silent until it is sent a
       // turn, so Check again after a sign-in refusal must send one. A fresh
       // spawn's bootstrap turn above already is that re-check.
@@ -2086,6 +2224,28 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // proves the turn was read, not that the session can finish one.
         deliveryKillStreak = 0;
         unresolvedTurns = Math.max(0, unresolvedTurns - 1);
+        // The greeting is this spawn's first turn, so the first `result` is its
+        // end (#2197). A message it wrote has already flipped it to answered.
+        // A turn that ran spends the greeting whether or not a chat reply was
+        // seen: "once" must not hang on spotting the reply (a hello posted in
+        // a comment thread, a client sending no session id that we could
+        // match), because a miss would re-send it on every later spawn. Only
+        // an errored turn — Claude never got to speak, the sign-in refusal
+        // among them — leaves it owed, so the start after the fix greets.
+        // "Errored" is either signal: `is_error` (the least-verified field —
+        // #1267 saw none during the spike) or an `error_*` subtype.
+        if (awaitingGreetingResult) {
+          awaitingGreetingResult = false;
+          if (greeting?.phase === "pending") greeting.phase = "unanswered";
+          // `error*` only: a subtype this build does not know must not leave
+          // the greeting owed, or every later spawn would greet again.
+          // `typeof` first: the envelope is the child's untyped JSON, and a
+          // throw here would reach the process's fatal-error handler.
+          const errored =
+            parsed.is_error === true ||
+            (typeof parsed.subtype === "string" && parsed.subtype.startsWith("error"));
+          if (!errored) spendGreeting();
+        }
 
         // A Claude Code that is not signed in answers every turn with this
         // refusal and never exits (#1780; see `NOT_SIGNED_IN_RESULT`). Stop:
@@ -2574,7 +2734,8 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // no poll lands on a plain stopped launcher in between; the plan still
         // runs, for `configured` alone — a user with no integration yet reads
         // as not-configured, and this standby decides their chip once the
-        // wizard writes one (`refreshConfigured`).
+        // wizard writes one (`startAfterSetup`, which holds rather than
+        // starts while this standby is set).
         holdInStandby(settings.startMode === "off" ? "off" : "awaiting-start");
         if (settings.startMode === "on-click") armGapWatch();
         console.error(
@@ -2921,6 +3082,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
         // `child`, so there is no observable window where they disagree.
         busy: activeTurnDelivery !== null && activeTurnDelivery.isBusy(),
         spawnedAt: currentSpawnedAt,
+        ...(greetingLate() ? { greetingLate: true as const } : {}),
       };
     }
     const stopped: Extract<SupervisorStatus, { running: false }> = { running: false };
@@ -2930,6 +3092,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     // Beside `restartPending` too: a pending restart with a standby is a START
     // from standby (`respawn` runs while `standby` is still set, until the
     // spawn clears it), which the client shows as "Starting Claude…".
+    if (greetingLate()) stopped.greetingLate = true;
     if (standby !== undefined && lastError === undefined) {
       stopped.standby = standby;
       // The conditions the standby watch applies, so the chat panel can promise
@@ -2960,6 +3123,71 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
       deliveryKillAt !== undefined &&
       Date.now() - deliveryKillAt < DELIVERY_KILL_EXIT_GRACE_MS
     );
+  }
+
+  function startAfterSetup(): Promise<TandemClaudeAfterSetup> {
+    let decide!: (d: TandemClaudeAfterSetup) => void;
+    const decision = new Promise<TandemClaudeAfterSetup>((resolve) => {
+      decide = resolve;
+    });
+    withLock(async () => {
+      const plan = await buildPlan();
+      if (!plan) return decide("not-configured");
+      // Shutdown, or the user's own Off: an Apply is not a Start.
+      if (shuttingDown || userStopped) return decide("held");
+      if (isAlive() || restartPending()) return decide("running");
+      const settings = await readSettingsNow();
+      // On-click holds boot (#2195), and a first Apply is boot for a Claude
+      // that has never run; idle-stopped is a choice too.
+      if (settings.startMode !== "auto" || standby !== undefined) return decide("held");
+      // A tripped breaker (a crash loop, a sign-in stop) or a stop that could
+      // not be confirmed (its child may still be alive) is a diagnosis for the
+      // user to act on: an Apply does not clear it the way their Start does.
+      if (breakerTripped || lastError === "stop-failed") return decide("held");
+      // Bryan's #2196 rule, applied here as well: never a second AI beside
+      // the user's own. Before the licence check, which RECORDS its refusal:
+      // a recorded refusal is what activating the licence resumes, and that
+      // resume would then start Tandem's Claude beside the user's own AI.
+      if (anotherAiOn()) return decide("other-ai");
+      const refusal = decideRefusal();
+      if (refusal !== null) {
+        recordLicenceRefusal(refusal);
+        return decide("refused");
+      }
+      decide("starting");
+      console.error("[Launcher] Setup wrote a Claude Code entry — starting Tandem's Claude");
+      // `respawn` reads the plan and settings again under this same lock: a
+      // second read, kept so this start takes respawn's one path rather than
+      // a variant fed from the checks above.
+      try {
+        await respawn(undefined, undefined, { clearSession: false });
+      } catch (err) {
+        recordStartThrow(err, "Starting Claude after setup failed");
+      }
+    }).catch((err: unknown) => {
+      // A throw before the decision (the plan or settings read): answer
+      // rather than leave the route waiting, and never reject — the caller is
+      // an HTTP handler whose apply already succeeded.
+      decide("unknown");
+      console.error("[Launcher] Starting Claude after setup failed:", err);
+    });
+    return decision;
+  }
+
+  /**
+   * A start that `respawn` threw out of, for the two starts nobody clicked (a
+   * message, a setup Apply). A licence refusal is already recorded. Any other
+   * throw — the settings or plan read — records nothing on its own, so record
+   * `spawn-failed`: otherwise the pill still offers Start as if nothing had
+   * been tried.
+   */
+  function recordStartThrow(err: unknown, label: string): void {
+    if (err instanceof LicenseRefusedError) {
+      console.error(`[Launcher] ${label}: unlicensed`);
+      return;
+    }
+    if (child === null && lastError === undefined) lastError = "spawn-failed";
+    console.error(`[Launcher] ${label}:`, err);
   }
 
   async function refreshConfigured(): Promise<void> {
@@ -3024,6 +3252,7 @@ export function createSupervisor(opts: SupervisorOpts): Supervisor {
     startFresh,
     status,
     refreshConfigured,
+    startAfterSetup,
     resumeAfterLicence,
     licenceRefusal,
     startByUser,

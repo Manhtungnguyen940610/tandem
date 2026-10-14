@@ -1114,20 +1114,12 @@ export async function startMcpServerHttp(
     readExisting: readExistingTandemEntries,
     serverVersion: APP_VERSION,
     // A wizard Apply that wrote a claude-code entry refreshes the launcher's
-    // "configured" answer (#2180), so the pill stops offering setup the user
-    // just finished. It does not start Claude: whether it should is still
-    // open. The `.catch` is load-bearing: an unhandled rejection exits the
-    // server (#2125).
-    onClaudeCodeApplied: launcher
-      ? () => {
-          launcher
-            .getSupervisor()
-            ?.refreshConfigured()
-            .catch((err: unknown) => {
-              console.error("[Tandem] Refreshing the launcher after setup failed:", err);
-            });
-        }
-      : undefined,
+    // "configured" answer (#2180) and starts Tandem's Claude when it should
+    // (#2197). With no supervisor yet (deferred autostart, disabled by env,
+    // or the moment between bind and `startLauncherSupervisor`) the answer is
+    // `undefined` → "unknown": the boot start reads the new entry itself.
+    // `startAfterSetup` never rejects, and the route guards it anyway (#2125).
+    onClaudeCodeApplied: launcher ? () => launcher.getSupervisor()?.startAfterSetup() : undefined,
   });
 
   // --- Auto-launcher endpoints (#477 PR 4b) ---

@@ -129,6 +129,7 @@ import {
 } from "./panels/annotation-actions";
 import { motionOff } from "./panels/cardMotion";
 import { exportChatMarkdown } from "./panels/chat-export";
+import { type GreetingAction, greetingNoteAction } from "./panels/chat-greeting";
 import { insertChatMarkdown } from "./panels/chat-insert";
 import MarginColumn from "./panels/MarginColumn.svelte";
 import { isLeftMarginAnnotation, isRightMarginAnnotation } from "./panels/marginSides";
@@ -664,6 +665,25 @@ const tandemClaudeControl = $derived<"start" | "turn-off" | null>(
       ? "start"
       : null,
 );
+
+/** The "hasn't said hello" note's action (#2197): restart a Claude that is
+ *  still running, otherwise the stopped launcher's own remedy. */
+const greetingAction = $derived<GreetingAction | null>(
+  greetingNoteAction({
+    greetingLate: aiReadiness.greetingLate,
+    serverUnreachable: aiReadiness.serverUnreachable,
+    aiOff: aiReadiness.aiNotice !== null,
+    stoppedByChoice: aiReadiness.launcherStandby !== null,
+    busy: aiReadiness.launcherBusy,
+    running: aiReadiness.launcherRunning,
+    remedy: aiReadiness.launcherRemedy,
+  }),
+);
+
+function onGreetingAction(action: GreetingAction): void {
+  if (action === "relaunch") restartClaude();
+  else aiCtaHandler(AI_CTA[action].action)();
+}
 
 function onResumeRemedy(remedy: AiRemedy): void {
   aiCtaHandler(AI_CTA[remedy].action)();
@@ -2740,6 +2760,8 @@ const shouldShowModelPicker = $derived(
             onTurnOffClaude={turnOffClaude}
             tandemClaudeResume={chatResumeState.view}
             {onResumeRemedy}
+            tandemClaudeGreetingLate={greetingAction}
+            {onGreetingAction}
             visible={chatVisible}
             aiDisabled={licenseStore.ui.aiOff}
           />
@@ -2857,6 +2879,11 @@ const shouldShowModelPicker = $derived(
         open={true}
         onClose={closeIntegrationWizard}
         onSetupModels={openModelsSettings}
+        tandemClaudeLive={{
+          running: aiReadiness.launcherRunning,
+          remedy: aiReadiness.launcherRemedy,
+          standby: aiReadiness.launcherStandby,
+        }}
       />
     {/if}
 

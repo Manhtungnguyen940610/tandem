@@ -119,6 +119,7 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), () => ({
     existing: [],
     picked: [],
     applyResults: [],
+    tandemClaude: null,
     errorMessage: null,
     channelRegistered: null,
     keychainUnavailable: false,

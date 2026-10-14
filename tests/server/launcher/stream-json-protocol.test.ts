@@ -29,6 +29,7 @@ import type { Supervisor } from "../../../src/server/launcher/supervisor.js";
 import { buildClaudeArgs, createSupervisor } from "../../../src/server/launcher/supervisor.js";
 import {
   CLAUDE_STREAM_JSON_FLAGS,
+  SUPERVISOR_GREETING_PROMPT,
   SUPERVISOR_INITIAL_PROMPT,
   SUPERVISOR_NO_ARM_CLAUSE,
   SUPERVISOR_NO_UNASKED_WORK_CLAUSE,
@@ -1402,6 +1403,9 @@ describe("the supervisor's turns tell a launched session not to self-arm", () =>
     // the one a resumed or compacted session actually sees.
     expect(SUPERVISOR_INITIAL_PROMPT).toContain(SUPERVISOR_NO_UNASKED_WORK_CLAUSE);
     expect(SUPERVISOR_WAKE_PROMPT).toContain(SUPERVISOR_NO_UNASKED_WORK_CLAUSE);
+    // The greeting (#2197) is the ONE unasked turn, and still carries the
+    // clause for everything after the hello.
+    expect(SUPERVISOR_GREETING_PROMPT).toContain(SUPERVISOR_NO_UNASKED_WORK_CLAUSE);
     expect(SUPERVISOR_NO_UNASKED_WORK_CLAUSE).toContain("unless the user asked you to");
     // An accept/dismiss wakes the session into a non-empty inbox that asks
     // for nothing; the tutorial invites exactly those clicks.
@@ -1426,5 +1430,33 @@ describe("the supervisor's turns tell a launched session not to self-arm", () =>
 
   it("names Monitor explicitly, so the instruction is actionable", () => {
     expect(SUPERVISOR_NO_ARM_CLAUSE).toContain("Monitor");
+  });
+});
+
+describe("SUPERVISOR_GREETING_PROMPT (#2197)", () => {
+  it("reads the inbox before greeting, so a user who already wrote gets an answer", () => {
+    const inbox = SUPERVISOR_GREETING_PROMPT.indexOf("tandem_checkInbox");
+    const greet = SUPERVISOR_GREETING_PROMPT.indexOf("say hello in the chat with tandem_reply");
+    expect(inbox).toBeGreaterThan(-1);
+    expect(greet).toBeGreaterThan(inbox);
+    // The hello goes to the chat even when what was waiting was a comment:
+    // a hello left in a thread is one the user may never see.
+    expect(SUPERVISOR_GREETING_PROMPT).toMatch(/even if what was waiting was a comment/);
+    expect(SUPERVISOR_GREETING_PROMPT).toContain("you wait to be asked");
+  });
+
+  it("claims no 'first session' — the v1.0 re-arm reaches existing users", () => {
+    expect(SUPERVISOR_GREETING_PROMPT).not.toMatch(/first session/i);
+  });
+
+  it("asks for one hello, nothing else unasked: no review, no opening documents", () => {
+    expect(SUPERVISOR_GREETING_PROMPT).toMatch(/say hello to the user once/);
+    // The greeting's own text, before the shared clause (which itself names
+    // "review" only to forbid it).
+    const own = SUPERVISOR_GREETING_PROMPT.slice(
+      0,
+      SUPERVISOR_GREETING_PROMPT.indexOf(SUPERVISOR_NO_UNASKED_WORK_CLAUSE),
+    );
+    expect(own).not.toMatch(/review|annotate|open a/i);
   });
 });

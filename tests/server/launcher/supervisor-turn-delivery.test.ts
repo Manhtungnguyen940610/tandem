@@ -49,6 +49,7 @@ import {
 } from "../../../src/server/launcher/supervisor.js";
 import type { AiRefusal } from "../../../src/server/license/ai-refusal.js";
 import {
+  SUPERVISOR_GREETING_PROMPT,
   SUPERVISOR_INITIAL_PROMPT,
   SUPERVISOR_WAKE_PROMPT,
 } from "../../../src/shared/launcher/contract.js";
@@ -2601,5 +2602,476 @@ describe("#2196 — the standby watch's DEFAULT subscription, against the real q
     setCtrlMode("tandem");
     _pushEventForTests(replyEvent("claude"));
     await nthChild(1);
+  });
+});
+
+// --- #2197 ----------------------------------------------------------------------
+
+describe("#2197 — startAfterSetup: a wizard Apply starts Tandem's Claude when it should", () => {
+  /** Boot with no integration (the first-run state), then write one. */
+  async function firstRunSupervisor(extra: ExtraOpts = {}, settings?: Record<string, unknown>) {
+    if (settings) writeLauncherSettingsFile(settings);
+    writeIntegrations([]);
+    const made = makeSupervisor(extra);
+    await made.sup.start();
+    expect(made.sup.status()).toMatchObject({ running: false, configured: false });
+    writeIntegrations(null);
+    return made;
+  }
+
+  it("auto, never configured: starts, fresh, and answers 'starting'", async () => {
+    const { sup } = await firstRunSupervisor();
+    expect(await sup.startAfterSetup()).toBe("starting");
+    const child = await nthChild(1);
+    await waitFor(() => sup.status().running, "running");
+    expect(texts(child)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it.each([
+    ["on-click", { startMode: "on-click", lifetime: "always", idleMinutes: 30 }],
+    ["off", { startMode: "off", lifetime: "always", idleMinutes: 30 }],
+  ])("%s: holds — an Apply is not a Start", async (_l, settings) => {
+    const { sup } = await firstRunSupervisor({}, settings);
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("a running Claude is left alone: 'running', no relaunch", async () => {
+    const { sup } = makeSupervisor();
+    await sup.start();
+    const child1 = await nthChild(1);
+    expect(await sup.startAfterSetup()).toBe("running");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+    expect(child1.killed).toBe(false);
+  });
+
+  it("idle-stopped is a choice too: held", async () => {
+    const { sup } = await stoppedByChoice("idle");
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+  });
+
+  it("no usable entry: 'not-configured'", async () => {
+    writeIntegrations([]);
+    const { sup } = makeSupervisor();
+    await sup.start();
+    expect(await sup.startAfterSetup()).toBe("not-configured");
+    expect(children).toHaveLength(0);
+  });
+
+  it("the licence refuses: 'refused', nothing spawned", async () => {
+    const { sup } = await firstRunSupervisor({ aiRefusal: () => LICENCE_REFUSAL });
+    expect(await sup.startAfterSetup()).toBe("refused");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("another AI is attached: 'other-ai', nothing spawned (#2196's rule)", async () => {
+    const { sup } = await firstRunSupervisor({ otherAiAttached: () => true });
+    expect(await sup.startAfterSetup()).toBe("other-ai");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("another AI attached AND the licence refusing: no refusal recorded, so activating starts nothing beside it", async () => {
+    let refused = true;
+    const { sup } = await firstRunSupervisor({
+      aiRefusal: () => (refused ? LICENCE_REFUSAL : null),
+      otherAiAttached: () => true,
+    });
+    expect(await sup.startAfterSetup()).toBe("other-ai");
+    expect(sup.licenceRefusal()).toBeNull();
+    refused = false;
+    await sup.resumeAfterLicence();
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("a sign-in stop (a tripped breaker) is a diagnosis: held, nothing spawned", async () => {
+    const { sup } = makeSupervisor();
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !sup.status().running, "the sign-in stop");
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(1);
+  });
+
+  it("'refused' is recorded, so activating the licence starts it", async () => {
+    let refused = true;
+    const { sup } = await firstRunSupervisor({
+      aiRefusal: () => (refused ? LICENCE_REFUSAL : null),
+    });
+    expect(await sup.startAfterSetup()).toBe("refused");
+    expect(sup.licenceRefusal()).not.toBeNull();
+    refused = false;
+    await sup.resumeAfterLicence();
+    await nthChild(1);
+  });
+
+  it("after shutdown's stop(): held", async () => {
+    const { sup } = await firstRunSupervisor();
+    await sup.stop();
+    expect(await sup.startAfterSetup()).toBe("held");
+    await sleep(30);
+    expect(children).toHaveLength(0);
+  });
+
+  it("answers before the spawn finishes", async () => {
+    const { sup } = await firstRunSupervisor();
+    const read = deferred<string>();
+    // Read 1 is the decision's plan; read 2 is the respawn's own plan.
+    const reads = interceptIntegrationsReads((n, pass) => (n === 2 ? read.promise : pass()));
+    try {
+      expect(await sup.startAfterSetup()).toBe("starting");
+      expect(children).toHaveLength(0);
+      read.resolve(fs.readFileSync(path.join(baseDir, "integrations.json"), "utf8"));
+    } finally {
+      reads.restore();
+    }
+    await nthChild(1);
+  });
+
+  it("a start that throws after the decision is recorded, not rejected", async () => {
+    const { sup } = await firstRunSupervisor();
+    const reads = interceptIntegrationsReads((n, pass) =>
+      n === 2 ? Promise.reject(new Error("boom")) : pass(),
+    );
+    try {
+      expect(await sup.startAfterSetup()).toBe("starting");
+      await waitFor(() => sup.status().lastError, "lastError");
+    } finally {
+      reads.restore();
+    }
+    expect(sup.status()).toMatchObject({ running: false, lastError: "spawn-failed" });
+  });
+});
+
+describe("#2197 — the one-time greeting", () => {
+  function greetingSeam(owed = true) {
+    const state = { owed, throws: false };
+    const markDone = vi.fn(async () => {
+      state.owed = false;
+    });
+    const replyCbs = new Set<(sessionId: string | undefined) => void>();
+    const extra: ExtraOpts = {
+      greeting: {
+        isOwed: () => {
+          if (state.throws) throw new Error("unreadable");
+          return state.owed;
+        },
+        markDone,
+      },
+      subscribeTandemReply: (cb) => {
+        replyCbs.add(cb);
+        return () => replyCbs.delete(cb);
+      },
+    };
+    /** A `tandem_reply` landed; no session id unless one is given. */
+    const claudeWrote = (sessionId?: string) => {
+      for (const cb of [...replyCbs]) cb(sessionId);
+    };
+    return { state, markDone, extra, claudeWrote };
+  }
+
+  it("a fresh spawn that owes the greeting sends it INSTEAD of the bootstrap", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("control: not owed, the ordinary bootstrap", async () => {
+    const g = greetingSeam(false);
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("an unreadable marker reads as not owed", async () => {
+    const g = greetingSeam();
+    g.state.throws = true;
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a resumed spawn that owes it sends it in place of the wake — one turn, not two", async () => {
+    const g = greetingSeam(false);
+    const { sup, emit } = makeSupervisor({ ...g.extra, idleMinuteMs: 40 });
+    writeLauncherSettingsFile({ startMode: "auto", lifetime: "idle", idleMinutes: 1 });
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await waitFor(() => children[0].killed, "the idle stop");
+    // Owed now — the v1.0 re-arm reaches a user with a saved session — and a
+    // chat is owed too. The chat starts it (#2196).
+    g.state.owed = true;
+    emit(chatEvent());
+    const child2 = await nthChild(2);
+    await waitFor(() => texts(child2).length > 0, "the first turn");
+    await settle();
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("a Claude chat message marks it done once; the next spawn gets the ordinary bootstrap", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    g.claudeWrote();
+    g.claudeWrote();
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a reply from a session this supervisor did not spawn is not the greeting; its own child's is", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    const own = JSON.parse(
+      fs.readFileSync(path.join(baseDir, "launcher-session.json"), "utf8"),
+    ) as { sessionId: string };
+    g.claudeWrote("someone-else");
+    expect(g.markDone).not.toHaveBeenCalled();
+    g.claudeWrote(own.sessionId);
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("matches its own child's session id case-insensitively", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    const own = JSON.parse(
+      fs.readFileSync(path.join(baseDir, "launcher-session.json"), "utf8"),
+    ) as { sessionId: string };
+    g.claudeWrote(own.sessionId.toUpperCase());
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("in Solo the hello waits: the ordinary first turn, still owed, then greeted in Tandem mode", async () => {
+    const g = greetingSeam();
+    let solo = true;
+    const { sup } = makeSupervisor({ ...g.extra, greetingHeldBySolo: () => solo });
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    expect(g.state.owed).toBe(true);
+    solo = false;
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("a mode read that throws holds the hello too", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({
+      ...g.extra,
+      greetingHeldBySolo: () => {
+        throw new Error("ctrl doc gone");
+      },
+    });
+    await sup.startFresh(cwdDir);
+    expect(texts(children[0])).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("a marker write that fails cannot make this process greet twice", async () => {
+    const g = greetingSeam();
+    g.markDone.mockImplementation(async () => {
+      throw new Error("EPERM");
+    });
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    g.claudeWrote();
+    await settle();
+    // The file still says owed.
+    expect(g.state.owed).toBe(true);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+    expect(occurrences("Could not record that the greeting was sent")).toBe(1);
+  });
+
+  it("a greeting turn that ends with no chat message is late, but spent: never sent again", async () => {
+    // "Once" must not hang on spotting the reply (a hello posted in a comment
+    // thread, a session id we could not match): a miss would re-send it on
+    // every later spawn.
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ running: true, greetingLate: true });
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    expect(g.state.owed).toBe(false);
+    // A later reply from the child still clears the note.
+    g.claudeWrote();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    expect(g.markDone).toHaveBeenCalledTimes(1);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_INITIAL_PROMPT]);
+  });
+
+  it("the restart the note advises retires the note, though the hello is spent", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    await sup.relaunch(cwdDir);
+    await nthChild(2);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("an errored greeting turn leaves it owed, and the next spawn greets", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "error_during_execution", is_error: true });
+    await settle();
+    expect(g.markDone).not.toHaveBeenCalled();
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+    // A new greeting turn is pending again, not late.
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("an error subtype with no is_error flag also leaves it owed", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "error_during_execution" });
+    await settle();
+    expect(g.markDone).not.toHaveBeenCalled();
+  });
+
+  it("a subtype this build doesn't know spends the greeting — never greet on every spawn", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: "some_new_kind", is_error: false });
+    await settle();
+    expect(g.markDone).toHaveBeenCalled();
+  });
+
+  it("a malformed subtype on the greeting's result is survived, not thrown", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], { type: "result", subtype: 42 });
+    await settle();
+    expect(g.markDone).toHaveBeenCalled();
+    expect(sup.status().running).toBe(true);
+  });
+
+  it("a crash before the greeting turn ends: the crash restart does not greet again", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    exitChild(children[0], 1);
+    const child2 = await nthChild(2);
+    await settle();
+    expect(texts(child2)).not.toContain(SUPERVISOR_GREETING_PROMPT);
+    // Still owed on disk: the next Tandem launch tries again.
+    expect(g.state.owed).toBe(true);
+    await sup.stop();
+  });
+
+  it("a restart we asked for while the greeting is pending greets again", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    await sup.startFresh(cwdDir);
+    const child2 = await nthChild(2);
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("no note while stopped by choice: Off after an unanswered greeting", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], RESULT_OK);
+    await settle();
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    await sup.updateSettings({ startMode: "off" });
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, standby: "off" });
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("a resumed spawn owing both the greeting and a sign-in re-check writes one turn", async () => {
+    const g = greetingSeam(false);
+    const first = makeSupervisor(g.extra).sup;
+    await first.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !first.status().running, "the sign-in stop");
+    await first.stop();
+    g.state.owed = true;
+    const { sup } = makeSupervisor(g.extra);
+    await sup.start();
+    const child2 = await nthChild(2);
+    await settle();
+    expect(texts(child2)).toEqual([SUPERVISOR_GREETING_PROMPT]);
+  });
+
+  it("still pending past the window is late; a message then clears it", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({ ...g.extra, greetingWindowMs: 40 });
+    await sup.startFresh(cwdDir);
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+    await sleep(60);
+    expect(sup.status()).toMatchObject({ greetingLate: true });
+    g.claudeWrote();
+    expect(sup.status()).not.toHaveProperty("greetingLate");
+  });
+
+  it("a Claude Code that is not signed in: late on the STOPPED status, and still owed", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor(g.extra);
+    await sup.startFresh(cwdDir);
+    pushJson(children[0], {
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      result: "Not logged in · Please run /login",
+    });
+    await waitFor(() => !sup.status().running, "the sign-in stop");
+    expect(sup.status()).toMatchObject({
+      running: false,
+      lastError: "needs-login",
+      greetingLate: true,
+    });
+    expect(g.markDone).not.toHaveBeenCalled();
+  });
+
+  it("a child that exits before its greeting turn ends is late", async () => {
+    const g = greetingSeam();
+    const { sup } = makeSupervisor({ ...g.extra, restartBackoffsMs: [10_000] });
+    await sup.startFresh(cwdDir);
+    exitChild(children[0], 1);
+    await settle();
+    expect(sup.status()).toMatchObject({ running: false, greetingLate: true });
   });
 });

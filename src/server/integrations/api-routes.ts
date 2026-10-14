@@ -42,12 +42,12 @@
  *   records a declined install (#1790, newer skill on disk) on the
  *   skill-refresh error channel — the response shape does not carry it.
  * - Then, if a `claude-code` entry applied, calls `onClaudeCodeApplied` so the
- *   launcher re-reads whether it is configured (#2180).
+ *   launcher re-reads whether it is configured (#2180) and, if it should, starts
+ *   Tandem's Claude (#2197); its decision rides the response as `tandemClaude`.
  * - Response never echoes entries / headers / tokens.
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-
 import type { Express, Request, Response } from "express";
 import { TANDEM_DISABLE_FIRST_RUN_WIZARD_ENV } from "../../shared/constants.js";
 import {
@@ -79,6 +79,7 @@ import {
   ERROR_CODE_WRITE_FAILED,
   type InstallClaudeCodeResponse,
 } from "../../shared/integrations/contract.js";
+import type { TandemClaudeAfterSetup } from "../../shared/launcher/contract.js";
 import { isLoopback } from "../auth/middleware.js";
 import { isLocalhostOrigin } from "../mcp/api-routes.js";
 import {
@@ -183,14 +184,46 @@ export interface IntegrationsRoutesDeps {
   installClaudeCli?: typeof installClaudeCli;
   /**
    * Called once at the end of a successful apply in which at least one
-   * `claude-code` entry was written (#2180). Production wires it to the
-   * launcher supervisor's `refreshConfigured()`, so the status stops reporting
-   * "not configured" (and the pill stops offering setup) as soon as setup is
-   * done; the boot-time plan had already run against an empty file. It does
-   * NOT start Claude: whether it should is an open product question. Must not
-   * throw; fire-and-forget.
+   * `claude-code` entry was written (#2180, #2197). Production wires it to the
+   * launcher supervisor's `startAfterSetup()`, which refreshes "configured" and
+   * starts Tandem's Claude when it should. The route waits at most
+   * `TANDEM_CLAUDE_DECISION_MS` for the decision and answers `"unknown"` past
+   * that or on a throw — the start itself still runs, and the config is
+   * already written, so nothing here can fail the apply.
    */
-  onClaudeCodeApplied?: () => void;
+  onClaudeCodeApplied?: () => Promise<TandemClaudeAfterSetup> | undefined;
+}
+
+/** How long the apply waits for the launcher's after-setup decision (#2197).
+ * The decision is one plan read and one settings read; a lock held by a
+ * relaunch's SIGTERM wait can take far longer, and the apply must not. */
+export const TANDEM_CLAUDE_DECISION_MS = 2_000;
+
+async function decideTandemClaude(
+  hook: (() => Promise<TandemClaudeAfterSetup> | undefined) | undefined,
+): Promise<TandemClaudeAfterSetup> {
+  let pending: Promise<TandemClaudeAfterSetup> | undefined;
+  try {
+    pending = hook?.();
+  } catch (err) {
+    console.error("[Tandem] apply: starting Tandem's Claude failed:", err);
+    return "unknown";
+  }
+  if (!pending) return "unknown";
+  // Handled either way, so a late rejection is never unhandled (#2125).
+  const guarded = pending.catch((err: unknown) => {
+    console.error("[Tandem] apply: starting Tandem's Claude failed:", err);
+    return "unknown" as const;
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<"unknown">((resolve) => {
+    timer = setTimeout(() => resolve("unknown"), TANDEM_CLAUDE_DECISION_MS);
+  });
+  try {
+    return await Promise.race([guarded, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -1043,12 +1076,16 @@ function makeApplyHandler(deps: IntegrationsRoutesDeps): Handler {
         }
       }
 
-      if (claudeCodeApplied) deps.onClaudeCodeApplied?.();
+      const tandemClaude = claudeCodeApplied
+        ? await decideTandemClaude(deps.onClaudeCodeApplied)
+        : undefined;
 
       // Rotate nonce on every successful apply (rejected calls don't burn the nonce).
       gate.nonce = randomBytes(32).toString("base64url");
 
-      res.status(200).json({ results, nextNonce: gate.nonce });
+      res
+        .status(200)
+        .json({ results, nextNonce: gate.nonce, ...(tandemClaude ? { tandemClaude } : {}) });
     } finally {
       gate.inFlight = false;
     }

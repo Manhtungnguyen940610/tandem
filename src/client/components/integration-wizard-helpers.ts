@@ -7,6 +7,8 @@
  */
 
 import { type IntegrationConfig, targetPushSupport } from "../../shared/integrations/contract.js";
+import type { LauncherStandby, TandemClaudeAfterSetup } from "../../shared/launcher/contract.js";
+import type { AiRemedy } from "../hooks/useAiReadiness.svelte";
 
 export type DoneHeaderState = "connected" | "waiting" | "partial";
 
@@ -103,4 +105,74 @@ export function pushSupportNote(
 ): PushSupportNote | null {
   if (kind === undefined || kind === "other-mcp") return null;
   return targetPushSupport(kind) === "none" ? NO_PUSH_TRANSPORT : null;
+}
+
+/** Readiness's live view of Tandem's Claude, for the done screen's line. */
+export interface TandemClaudeLive {
+  running: boolean;
+  /** `launcherRemedy`: non-null when it is stopped and something would fix it. */
+  remedy: AiRemedy | null;
+  standby: LauncherStandby | null;
+}
+
+/**
+ * The done screen's line about Tandem's OWN Claude (#2197; #2180 item 5), or
+ * `null` to say nothing (no claude-code entry written, an older server, or an
+ * answer that came too late to trust).
+ *
+ * The rest of the done screen is about the user's Claude Code config — whether
+ * their terminal sessions can reach Tandem. This line is about the background
+ * Claude Tandem runs itself, which a first Apply now starts. The apply's answer
+ * is only the starting point: once the launcher status says Claude is running,
+ * or has failed, that wins, so the line never keeps promising a start that
+ * already went wrong.
+ */
+export function tandemClaudeDoneCopy(
+  initial: TandemClaudeAfterSetup | null,
+  live: TandemClaudeLive | null,
+): string | null {
+  if (initial === null) return null;
+  // Held copy, shared by an Apply that held and one whose start has since
+  // settled into a standby (an idle stop while the screen is open).
+  const heldLine = (): string => {
+    if (live?.standby === "off") {
+      return "Tandem's own Claude is turned off. Start it from the status bar or the chat panel when you want it.";
+    }
+    if (live?.standby === "idle") {
+      return "Tandem's own Claude stopped while it was idle. Sending a chat message starts it again.";
+    }
+    // Held over a diagnosis (a crash loop, a sign-in stop, a stop that
+    // could not be confirmed): that, not Start, is what needs attention.
+    if (live?.remedy && live.remedy !== "start") {
+      return "Tandem's own Claude is stopped. The status bar shows what to do.";
+    }
+    return "Tandem's own Claude starts when you click Start in the status bar or the chat panel, or send it a chat message.";
+  };
+  // Whatever the Apply answered, a Claude that is running now is the truth.
+  if (live?.running) {
+    return "Tandem's own Claude is running in the background. Open the chat panel to talk to it — on a first run it says hello there, unless Solo mode is on.";
+  }
+  // The launcher's answer timed out, and nothing since says it is running.
+  if (initial === "unknown") return null;
+  if (initial === "starting" || initial === "running") {
+    if (live?.standby) return heldLine();
+    if (live?.remedy && live.remedy !== "start") {
+      return "Tandem's own Claude couldn't start. The status bar shows what to do.";
+    }
+    return "Tandem is starting its own Claude in the background. Open the chat panel to talk to it — on a first run it says hello there, unless Solo mode is on.";
+  }
+  switch (initial) {
+    case "held":
+      return heldLine();
+    case "other-ai":
+      return "Tandem didn't start its own Claude, because another AI session is already connected to it.";
+    case "refused":
+      return "Tandem's AI features are off, so it didn't start its own Claude. See Settings → License.";
+    case "not-configured":
+      return "Tandem couldn't find the Claude Code setup it just saved, so it didn't start its own Claude. Try running setup again.";
+    default: {
+      const _exhaustive: never = initial;
+      return _exhaustive;
+    }
+  }
 }

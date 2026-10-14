@@ -35,6 +35,8 @@ function renderChat() {
       onTurnOffClaude: () => {},
       tandemClaudeResume: null,
       onResumeRemedy: () => {},
+      tandemClaudeGreetingLate: null,
+      onGreetingAction: () => {},
       aiDisabled: false,
     },
   });

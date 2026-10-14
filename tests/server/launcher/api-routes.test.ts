@@ -72,6 +72,7 @@ function makeFakeSupervisor(opts: FakeSupervisorOpts = {}): Supervisor {
       return opts.respawnResult ?? { spawned: true };
     },
     refreshConfigured: async () => {},
+    startAfterSetup: async () => "unknown" as const,
     resumeAfterLicence: async () => {},
     licenceRefusal: () => null,
     startByUser: opts.startByUser ?? (async () => ({ spawned: true })),
@@ -865,6 +866,7 @@ describe("loopback vs LAN redaction for running:false (T6)", () => {
       relaunch: async () => ({ spawned: true }),
       startFresh: async () => ({ spawned: true }),
       refreshConfigured: async () => {},
+      startAfterSetup: async () => "unknown" as const,
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
@@ -910,6 +912,7 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       relaunch: async () => ({ spawned: true }),
       startFresh: async () => ({ spawned: true }),
       refreshConfigured: async () => {},
+      startAfterSetup: async () => "unknown" as const,
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
@@ -936,6 +939,7 @@ describe("/status try/catch on supervisor throw (B4)", () => {
       relaunch: async () => ({ spawned: true }),
       startFresh: async () => ({ spawned: true }),
       refreshConfigured: async () => {},
+      startAfterSetup: async () => "unknown" as const,
       resumeAfterLicence: async () => {},
       licenceRefusal: () => null,
       startByUser: async () => ({ spawned: true }),
@@ -1475,6 +1479,36 @@ describe("GET /api/launcher/status — standby (#2195)", () => {
     const { app } = makeApp(baseDeps(sup));
     const res = await request(app, "GET", "/api/launcher/status");
     expect(res.body).toMatchObject({ standby: "off", startsOnMessage: true });
+  });
+
+  it.each([
+    [
+      "a running child",
+      {
+        running: true,
+        reaperPid: 1,
+        cwd: "/x",
+        sessionId: "s",
+        resuming: false,
+        busy: false,
+        spawnedAt: 1,
+        greetingLate: true,
+      },
+    ],
+    [
+      "a stopped one (a sign-in stop)",
+      { running: false, lastError: "needs-login", greetingLate: true },
+    ],
+  ] as const)("passes greetingLate to loopback callers beside %s (#2197)", async (_l, st) => {
+    const sup: Supervisor = { ...makeFakeSupervisor(), status: () => st as never };
+    const loop = await request(makeApp(baseDeps(sup)).app, "GET", "/api/launcher/status");
+    expect(loop.body).toMatchObject({ greetingLate: true });
+    const lan = await request(
+      makeApp(baseDeps(sup), { remoteAddress: "192.168.1.50" }).app,
+      "GET",
+      "/api/launcher/status",
+    );
+    expect(lan.body).not.toHaveProperty("greetingLate");
   });
 
   it("withholds startsOnMessage from non-loopback callers (#2196)", async () => {

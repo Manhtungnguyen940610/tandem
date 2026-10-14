@@ -11,6 +11,7 @@ import { flatOffsetToPmPos } from "../positions";
 import { agentColor } from "../utils/agent-color";
 import { AI_OFF_TITLE } from "../utils/license-ui";
 import { localChatDateLabel } from "./chat-export";
+import { GREETING_LATE_TEXT, GREETING_RELAUNCH, type GreetingAction } from "./chat-greeting";
 import { renderMarkdown } from "./chat-markdown";
 import { chatPickup, chatPickupAnnouncement, chatPickupLabel } from "./chat-pickup";
 import { type ChatResume, chatResumeLabel } from "./chat-resume";
@@ -65,6 +66,14 @@ interface Props {
   /** Runs the failed row's remedy (`AI_CTA[remedy].action`). */
   onResumeRemedy: (remedy: Extract<ChatResume, { kind: "failed" }>["remedy"]) => void;
   /**
+   * The "hasn't said hello" note (#2197; `chat-greeting.ts`): its action, or
+   * null to hide. Below the resume row in precedence (a start under way says
+   * more), above the pickup row, which it replaces while shown. Required, with
+   * its handler, for the same PanelSlot reason as `tandemClaudeControl`.
+   */
+  tandemClaudeGreetingLate: GreetingAction | null;
+  onGreetingAction: (action: GreetingAction) => void;
+  /**
    * The licence refuses the AI (#1521). Disables the composer and send; the
    * history stays fully readable. Required, with no default, so a mount that
    * forgets it fails to compile rather than fail open.
@@ -93,6 +102,8 @@ let {
   onTurnOffClaude,
   tandemClaudeResume,
   onResumeRemedy,
+  tandemClaudeGreetingLate,
+  onGreetingAction,
   aiDisabled,
 }: Props = $props();
 
@@ -134,14 +145,19 @@ $effect(() => {
 // reads the real time in the same evaluation. (Re-showing a hidden panel also
 // lands on the current time; `chat-panel-pickup.test.ts` pins that outcome.)
 let now = $state(Date.now());
+// Either row replaces the pickup row (one answer to "what is happening with my
+// message"); the template and the live region put the resume row first.
 const pickup = $derived(
-  tandemClaudeResume ? null : chatPickup(messages, Math.max(now, Date.now())),
+  tandemClaudeResume || tandemClaudeGreetingLate
+    ? null
+    : chatPickup(messages, Math.max(now, Date.now())),
 );
 const pickupKind = $derived(pickup?.kind ?? null);
 // The primitive, for the scroll effect: `chatResume` returns a new object on
 // every recompute, and an effect reading the object would scroll a reader who
 // scrolled up back down on a change that moved nothing.
 const resumeKind = $derived(tandemClaudeResume?.kind ?? null);
+const greetingLateShown = $derived(tandemClaudeGreetingLate != null);
 
 // Tick only while a row is showing in a panel that is not hidden, so the elapsed
 // count moves and the age cap can retire the row. Keyed on the primitive kind, so
@@ -164,7 +180,7 @@ let prevMessages: ChatMessage[] | null = null;
 $effect(() => {
   // The resume row too (#2196): its change to the taller failed row carries
   // the remedy button, which must not land below the fold.
-  const kind = resumeKind ?? pickupKind;
+  const kind = resumeKind ?? (greetingLateShown ? "greeting" : pickupKind);
   // untrack: reduceMotion pref change shouldn't re-trigger scroll.
   const sb = untrack(() => scrollBehavior);
   const messagesChanged = messages !== prevMessages;
@@ -525,6 +541,29 @@ async function exportChat() {
           {AI_CTA[remedy].label}
         </button>
       </div>
+    {:else if tandemClaudeGreetingLate}
+      {@const greet =
+        tandemClaudeGreetingLate === "relaunch"
+          ? GREETING_RELAUNCH
+          : AI_CTA[tandemClaudeGreetingLate]}
+      <div
+        class="chat-status-row chat-status-row-wrap"
+        data-testid="chat-greeting-late"
+        data-action={tandemClaudeGreetingLate}
+        style="color: var(--tandem-warning-fg-strong);"
+      >
+        <span aria-hidden="true">{GREETING_LATE_TEXT}</span>
+        <button
+          type="button"
+          class="chat-header-action"
+          data-testid="chat-greeting-late-action"
+          title={greet.title}
+          aria-label={greet.ariaLabel}
+          onclick={() => onGreetingAction(tandemClaudeGreetingLate)}
+        >
+          {greet.label}
+        </button>
+      </div>
     {:else if pickup}
       <div
         aria-hidden="true"
@@ -545,7 +584,9 @@ async function exportChat() {
       srOnly
       message={tandemClaudeResume
         ? chatResumeLabel(tandemClaudeResume)
-        : chatPickupAnnouncement(pickupKind)}
+        : tandemClaudeGreetingLate
+          ? GREETING_LATE_TEXT
+          : chatPickupAnnouncement(pickupKind)}
       data-testid="chat-pickup-live"
     />
     <div bind:this={messagesEndEl}></div>

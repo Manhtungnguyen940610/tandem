@@ -16,6 +16,7 @@ import {
   API_INTEGRATIONS_SECRET,
   type IntegrationsRoutesDeps,
   registerIntegrationsRoutes,
+  TANDEM_CLAUDE_DECISION_MS,
 } from "../../../src/server/integrations/api-routes.js";
 import {
   _resetSkillRefreshErrorForTests,
@@ -1186,9 +1187,13 @@ describe("integrations API routes", () => {
       // boot-time plan (nothing configured) until Tandem restarted.
       describe("onClaudeCodeApplied (#2180)", () => {
         async function applyWith(
-          onClaudeCodeApplied: () => void,
+          onClaudeCodeApplied: NonNullable<IntegrationsRoutesDeps["onClaudeCodeApplied"]>,
           detect: IntegrationsRoutesDeps["detectTargets"],
-        ): Promise<{ status: number; results: Array<{ status: string }> }> {
+        ): Promise<{
+          status: number;
+          results: Array<{ status: string }>;
+          tandemClaude?: string;
+        }> {
           const configPath = path.join(tmpDir, "claude-config.json");
           fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
           await deps.store.write({
@@ -1218,10 +1223,8 @@ describe("integrations API routes", () => {
             { ids: ["cc-1"], confirmationNonce: nonce },
             TAURI_ORIGIN,
           );
-          return {
-            status: res.status,
-            results: (res.body as { results: Array<{ status: string }> }).results,
-          };
+          const body = res.body as { results: Array<{ status: string }>; tandemClaude?: string };
+          return { status: res.status, results: body.results, tandemClaude: body.tandemClaude };
         }
 
         it("is called once after a claude-code entry applies, after the skill install", async () => {
@@ -1238,6 +1241,56 @@ describe("integrations API routes", () => {
           );
         });
 
+        // #2197: the hook now starts Tandem's Claude, and its decision is the
+        // done screen's first view of it.
+        it("returns the launcher's decision as tandemClaude", async () => {
+          const configPath = path.join(tmpDir, "claude-config.json");
+          const { status, tandemClaude } = await applyWith(
+            async () => "starting" as const,
+            () => [{ label: "Claude Code", configPath, kind: "claude-code" }],
+          );
+          expect(status).toBe(200);
+          expect(tandemClaude).toBe("starting");
+        });
+
+        type Hook = NonNullable<IntegrationsRoutesDeps["onClaudeCodeApplied"]>;
+        const hooks: Array<[string, Hook]> = [
+          ["no supervisor (undefined)", () => undefined],
+          [
+            "a throw",
+            () => {
+              throw new Error("boom");
+            },
+          ],
+          ["a rejection", () => Promise.reject(new Error("boom"))],
+        ];
+        it.each(hooks)("answers unknown on %s, and the apply still succeeds", async (_l, hook) => {
+          const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+          try {
+            const configPath = path.join(tmpDir, "claude-config.json");
+            const { status, results, tandemClaude } = await applyWith(hook, () => [
+              { label: "Claude Code", configPath, kind: "claude-code" },
+            ]);
+            expect(status).toBe(200);
+            expect(results[0]?.status).toBe("applied");
+            expect(tandemClaude).toBe("unknown");
+          } finally {
+            errorSpy.mockRestore();
+          }
+        });
+
+        it("waits no longer than the bound for a decision", async () => {
+          const configPath = path.join(tmpDir, "claude-config.json");
+          const started = Date.now();
+          const { status, tandemClaude } = await applyWith(
+            () => new Promise(() => {}),
+            () => [{ label: "Claude Code", configPath, kind: "claude-code" }],
+          );
+          expect(status).toBe(200);
+          expect(tandemClaude).toBe("unknown");
+          expect(Date.now() - started).toBeLessThan(TANDEM_CLAUDE_DECISION_MS + 1_500);
+        });
+
         it("guard: is not called when nothing applied", async () => {
           const hook = vi.fn();
           const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -1245,6 +1298,8 @@ describe("integrations API routes", () => {
             const { results } = await applyWith(hook, () => []);
             expect(results[0]?.status).not.toBe("applied");
             expect(hook).not.toHaveBeenCalled();
+            // And the response carries no Tandem's Claude field at all.
+            expect((await applyWith(hook, () => [])).tandemClaude).toBeUndefined();
           } finally {
             errorSpy.mockRestore();
           }

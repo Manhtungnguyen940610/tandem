@@ -63,6 +63,8 @@ import {
   computeDoneHeaderState,
   type PushSupportNote,
   pushSupportNote,
+  type TandemClaudeLive,
+  tandemClaudeDoneCopy,
 } from "./integration-wizard-helpers.js";
 import LiveRegion from "./LiveRegion.svelte";
 import PushRoutesInfo from "./PushRoutesInfo.svelte";
@@ -77,9 +79,16 @@ interface Props {
    * (and undefined-safe via `?.`) while dark.
    */
   onSetupModels?: () => void;
+  /**
+   * Tandem's own Claude as the launcher status shows it now (#2197): refines
+   * the apply's `tandemClaude` answer on the done screen, so a start that has
+   * since failed or come up is reported as it is. App passes readiness; a mount
+   * without it shows the apply's answer alone.
+   */
+  tandemClaudeLive?: TandemClaudeLive | null;
 }
 
-let { open, onClose, onSetupModels }: Props = $props();
+let { open, onClose, onSetupModels, tandemClaudeLive = null }: Props = $props();
 
 // Absolute base URL because the Vite dev server does not proxy /api/* —
 // other client modules (yjsSync, useNotifications, fileUpload) follow the
@@ -214,6 +223,20 @@ function reachabilityStatusFor(id: string): ReachabilityStatus | null {
   return reachability.results.find((r) => r.id === id)?.status ?? null;
 }
 
+// `/health.hasSession` counts every MCP session, Tandem's own background
+// Claude included (#2197). While the Apply started it (or it was running), a
+// session proves nothing about the user's own Claude, so the screen does not
+// claim "connected" and keeps the restart-and-/mcp guidance.
+// Not when the session /health counts may be Tandem's own Claude: an Apply
+// that started it, or one whose answer timed out (`unknown`) with it running
+// now.
+const userClaudeConnected = $derived(
+  reachability.claudeConnected &&
+    wizard.tandemClaude !== "starting" &&
+    wizard.tandemClaude !== "running" &&
+    tandemClaudeLive?.running !== true,
+);
+
 // Adapt the "what's next" guidance to the reachability outcome.
 const whatsNext = $derived.by((): "connected" | "unreachable" | "stdio-only" | "default" => {
   const rows = reachability.results;
@@ -222,7 +245,7 @@ const whatsNext = $derived.by((): "connected" | "unreachable" | "stdio-only" | "
   );
   if (!hasHttp && rows.length > 0) return "stdio-only";
   if (rows.some((r) => r.status === "unreachable")) return "unreachable";
-  if (reachability.claudeConnected) return "connected";
+  if (userClaudeConnected) return "connected";
   return "default";
 });
 
@@ -563,9 +586,9 @@ const anyApplyErrors = $derived(wizard.applyResults.some((r) => r.status === "er
 
 // See computeDoneHeaderState — the honesty contract lives in the pure helper
 // (unit-tested); this derived just feeds it the two live inputs.
-const doneHeaderState = $derived(
-  computeDoneHeaderState(anyApplyErrors, reachability.claudeConnected),
-);
+const doneHeaderState = $derived(computeDoneHeaderState(anyApplyErrors, userClaudeConnected));
+// The line about Tandem's own background Claude (#2197).
+const tandemClaudeLine = $derived(tandemClaudeDoneCopy(wizard.tandemClaude, tandemClaudeLive));
 
 /** Per-row delivery truth, joined the same way `resultLabel` joins the label.
  *  Static (a fact of the target kind), so unlike `reachabilityLine` it needs no
@@ -647,7 +670,7 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
       {#if status === "verifying"}
         Checking Tandem is reachable…
       {:else if status === "reachable"}
-        {reachability.claudeConnected
+        {userClaudeConnected
           ? "Claude connected just now"
           : "Server's up — restart Claude and run /mcp to connect it"}
       {:else if status === "unreachable"}
@@ -1131,6 +1154,11 @@ function pushSupportNoteFor(id: string): PushSupportNote | null {
                 {/if}
               </span>
             </div>
+            {#if tandemClaudeLine}
+              <p class="iw-hint-text" data-testid="integration-wizard-tandem-claude">
+                {tandemClaudeLine}
+              </p>
+            {/if}
             {#if isTauriRuntime() && wizardAutostartStatus !== null && !wizardAutostartBlocked}
               <label class="iw-autostart" data-testid="integration-wizard-autostart">
                 <input

@@ -161,6 +161,8 @@ more lines in `__snapshots__/testid-set.snap.txt`.
 - `chat-tandem-claude-resuming` — "Claude is resuming…" / "Starting Tandem's Claude…" row for a chat that is starting a stopped Tandem's Claude (#2196; `data-verb` is `resuming` or `starting`); replaces the pickup row
 - `chat-tandem-claude-resume-failed` — the same row once the start failed or never began (#2196; `data-remedy` is the `AiChip` it offers)
 - `chat-tandem-claude-resume-remedy` — that row's remedy button
+- `chat-greeting-late` — "Tandem's Claude hasn't said hello" note, when the one-time greeting did not reach the chat (#2197; `data-action` is `relaunch` or the stopped launcher's `AiChip`); below the resume row, replaces the pickup row
+- `chat-greeting-late-action` — that note's button
 - `clear-chat-btn`, `held-banner`, `store-readonly-banner`,
   `store-readonly-dismiss`, `peek-strip-{*}`,
   `panel-edge-collapse-{*}` (resize-handle selectors synthesized — see Known
@@ -294,6 +296,8 @@ shipped and were removed:
   `integration-wizard-apply-result-{*}`
 - Post-apply reachability (#1174): `integration-wizard-reachability-{*}`,
   `integration-wizard-whats-next`
+- Tandem's own Claude after the apply (#2197): `integration-wizard-tandem-claude` — only when a
+  claude-code entry was written and the server answered what it did about it
 - Start at login (#1463): `integration-wizard-autostart{,-toggle,-error}` — desktop only, and
   hidden entirely when the OS reports no tray, so absence is not a regression signal on its own.
 - Per-target delivery honesty (#1299): `integration-wizard-push-support-{*}` —

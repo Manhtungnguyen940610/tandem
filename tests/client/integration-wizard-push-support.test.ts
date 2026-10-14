@@ -37,6 +37,9 @@ import { wizardStepCell } from "../helpers/wizard-step-cell.svelte";
 const wizardStub: {
   picked: IntegrationWizardState["picked"];
   applyResults: ApplyItemResult[];
+  tandemClaude: string | null;
+  /** `/health.hasSession`'s latch, which Tandem's own child also sets. */
+  claudeConnected: boolean;
   channelRegistered: boolean | null;
   /**
    * Delegated to a `$state` cell (#1432). A plain field here would be read
@@ -48,6 +51,8 @@ const wizardStub: {
 } = {
   picked: [],
   applyResults: [],
+  tandemClaude: null,
+  claudeConnected: false,
   channelRegistered: null,
   get step(): WizardStep {
     return wizardStepCell.value as WizardStep;
@@ -78,6 +83,9 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), async (imp
     get applyResults() {
       return wizardStub.applyResults;
     },
+    get tandemClaude() {
+      return wizardStub.tandemClaude as never;
+    },
     get channelRegistered() {
       return wizardStub.channelRegistered;
     },
@@ -102,7 +110,9 @@ vi.mock(import("../../src/client/hooks/useReachabilityCheck.svelte"), () => ({
   createReachabilityCheck: () => ({
     phase: "done",
     serverUp: null,
-    claudeConnected: false,
+    get claudeConnected() {
+      return wizardStub.claudeConnected;
+    },
     results: wizardStub.applyResults.map((r) => ({
       id: r.id,
       status: r.id.startsWith("claude-desktop") ? "not-applicable" : "reachable",
@@ -245,6 +255,7 @@ describe("IntegrationWizardModal — per-target push support (#1299)", () => {
     cleanup();
     wizardStub.picked = [];
     wizardStub.applyResults = [];
+    wizardStub.tandemClaude = null;
     wizardStub.channelRegistered = null;
     wizardStepCell.reset();
     vi.clearAllMocks();
@@ -350,6 +361,7 @@ describe("IntegrationWizardModal — push-mode copy (#1389, #1390)", () => {
     cleanup();
     wizardStub.picked = [];
     wizardStub.applyResults = [];
+    wizardStub.tandemClaude = null;
     wizardStub.channelRegistered = null;
     wizardStepCell.reset();
     coworkStub.status = null;
@@ -774,5 +786,69 @@ describe("IntegrationWizardModal — push-mode copy (#1389, #1390)", () => {
     await tick();
 
     await clickCopy(container, /Couldn't copy/i);
+  });
+});
+
+describe("IntegrationWizardModal — Tandem's own Claude on the done screen (#2197)", () => {
+  afterEach(() => {
+    cleanup();
+    wizardStub.picked = [];
+    wizardStub.applyResults = [];
+    wizardStub.tandemClaude = null;
+    wizardStub.claudeConnected = false;
+    wizardStepCell.reset();
+  });
+
+  const runningLive = { running: true, remedy: null, standby: null } as const;
+  it.each([
+    ["starting", null, false],
+    ["running", null, false],
+    [null, null, true],
+    // The answer timed out; Tandem's Claude is running now, so it may be the session.
+    ["unknown", runningLive, false],
+    ["unknown", null, true],
+  ] as const)(
+    "a session after an apply that answered %s (live %o): claims 'connected' only when Tandem's own Claude cannot be the session",
+    async (tandemClaude, live, claims) => {
+      wizardStub.picked = [pickedCode()];
+      wizardStub.applyResults = [applied("claude-code-1")];
+      wizardStub.tandemClaude = tandemClaude;
+      wizardStub.claudeConnected = true;
+      const { container } = render(IntegrationWizardModal, {
+        props: { open: true, onClose: vi.fn(), tandemClaudeLive: live },
+      });
+      await tick();
+      const row = q(container, "integration-wizard-reachability-claude-code-1")?.textContent ?? "";
+      if (claims) expect(row).toContain("Claude connected just now");
+      else expect(row).toContain("restart Claude and run /mcp");
+    },
+  );
+
+  it("names the start the apply reported, and the live state refines it", async () => {
+    wizardStub.picked = [pickedCode()];
+    wizardStub.applyResults = [applied("claude-code-1")];
+    wizardStub.tandemClaude = "starting";
+    const { container, rerender } = render(IntegrationWizardModal, {
+      props: { open: true, onClose: vi.fn(), tandemClaudeLive: null },
+    });
+    await tick();
+    expect(q(container, "integration-wizard-tandem-claude")?.textContent).toContain(
+      "Tandem is starting its own Claude",
+    );
+    await rerender({
+      open: true,
+      onClose: vi.fn(),
+      tandemClaudeLive: { running: true, remedy: null, standby: null },
+    });
+    await tick();
+    expect(q(container, "integration-wizard-tandem-claude")?.textContent).toContain(
+      "Tandem's own Claude is running",
+    );
+  });
+
+  it("control: no line when the apply wrote no claude-code entry", async () => {
+    const { container } = mountDone([pickedDesktop()], [applied("claude-desktop-1")]);
+    await tick();
+    expect(q(container, "integration-wizard-tandem-claude")).toBeNull();
   });
 });

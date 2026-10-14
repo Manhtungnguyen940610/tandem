@@ -14,6 +14,8 @@
  * `IntegrationsFile` here, so the two stay in sync.
  */
 
+import type { TandemClaudeAfterSetup } from "../launcher/contract.js";
+
 // --- API paths ---------------------------------------------------------------
 
 export const API_INTEGRATIONS_EXISTING = "/api/integrations/existing";
@@ -281,6 +283,9 @@ export interface ApplyResponse {
   results: ApplyItemResult[];
   /** Fresh nonce for the next apply (rotates on every successful call). */
   nextNonce: string;
+  /** What the apply did about Tandem's own Claude (#2197), when a claude-code
+   * entry was written — the done screen's initial view. Absent otherwise. */
+  tandemClaude?: TandemClaudeAfterSetup;
 }
 
 export interface FirstRunNeededResponse {

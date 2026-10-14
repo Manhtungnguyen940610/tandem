@@ -237,3 +237,32 @@ test("with another AI attached, a chat promises nothing (#2196)", async ({ page 
   // The send toast is NOT held back here — the control for the test above.
   await expect(page.getByText("nothing will answer")).toBeVisible({ timeout: 5_000 });
 });
+
+test("the greeting that never came shows how to fix it, and only while late (#2197)", async ({
+  page,
+}) => {
+  let status: Record<string, unknown> = {
+    available: true,
+    running: true,
+    reaperPid: 1,
+    cwd: "/home/e2e",
+    sessionId: "<set>",
+    resuming: false,
+    busy: false,
+    attached: false,
+    greetingLate: true,
+  };
+  await stubLauncher(page, () => status);
+  await page.goto("/");
+  await page.waitForSelector("[data-testid='title-bar']", { timeout: 15_000 });
+  await openChat(page);
+  const note = page.locator("[data-testid='chat-greeting-late']");
+  await expect(note).toBeVisible({ timeout: 15_000 });
+  await expect(note).toContainText("hasn't said hello");
+  await expect(page.locator("[data-testid='chat-greeting-late-action']")).toHaveText(
+    "Restart Tandem's Claude",
+  );
+  // The hello arrives (the server stops reporting it late): the note goes.
+  status = { ...status, greetingLate: undefined };
+  await expect(note).toHaveCount(0, { timeout: 15_000 });
+});
