@@ -2133,7 +2133,7 @@ const PLUGIN_VERSION_MAX_LENGTH = 64;
  * settings, so the install it enables is the user-scope one. A project-scope
  * install is enabled by that project's own settings, which this check never
  * reads, and an old one in some unrelated project would otherwise raise a
- * warning about the plugin every session on the machine actually loads. With
+ * warning about the user-scope plugin, which is not the one that is stale. With
  * no `scope` field on any install (a shape we have not seen, but cannot rule
  * out) every install is considered, as before.
  */
