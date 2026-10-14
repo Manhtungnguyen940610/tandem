@@ -298,6 +298,11 @@ shipped and were removed:
   `integration-wizard-whats-next`
 - Tandem's own Claude after the apply (#2197): `integration-wizard-tandem-claude` — only when a
   claude-code entry was written and the server answered what it did about it
+- The v1.0 walkthrough (#2198): `integration-wizard-walkthrough-intro`,
+  `integration-wizard-keep-setup` ("Keep this setup", or "Continue without connecting" with nothing
+  set up), `integration-wizard-keep-error`, `integration-wizard-start-mode` (wraps the start
+  choice, whose radios keep their `settings-modal-tandem-claude-start-*` ids) — only while the
+  walkthrough is owed
 - Start at login (#1463): `integration-wizard-autostart{,-toggle,-error}` — desktop only, and
   hidden entirely when the OS reports no tray, so absence is not a regression signal on its own.
 - Per-target delivery honesty (#1299): `integration-wizard-push-support-{*}` —

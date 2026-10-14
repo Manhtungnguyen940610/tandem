@@ -258,6 +258,8 @@ integration-wizard-error-retry
 integration-wizard-install-claude
 integration-wizard-install-error
 integration-wizard-install-success
+integration-wizard-keep-error
+integration-wizard-keep-setup
 integration-wizard-keychain-fallback
 integration-wizard-models-setup
 integration-wizard-more
@@ -275,12 +277,14 @@ integration-wizard-secret-input-{*}
 integration-wizard-secret-submit-{*}
 integration-wizard-settings-pointer
 integration-wizard-shim-warning
+integration-wizard-start-mode
 integration-wizard-step-applying
 integration-wizard-step-detect
 integration-wizard-step-done
 integration-wizard-step-error
 integration-wizard-step-verifying
 integration-wizard-tandem-claude
+integration-wizard-walkthrough-intro
 integration-wizard-whats-next
 left-outline-rail
 license-activate-error

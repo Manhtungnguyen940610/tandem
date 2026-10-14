@@ -41,6 +41,18 @@ import {
 } from "../../actions/builtin.svelte.js";
 import { API_BASE } from "../../utils/fileUpload";
 
+interface Props {
+  /** The setup wizard's v1.0 walkthrough (#2198): the start choice alone,
+   * with its own copy. Lifetime and idle stay in Settings. */
+  startModeOnly?: boolean;
+  /** Told when a save starts and when the last one settles, so a host can
+   * hold an action that must read the saved mode (the wizard's Connect and
+   * Keep, which ask the launcher to start under it). */
+  onBusyChange?: (busy: boolean) => void;
+}
+
+let { startModeOnly = false, onBusyChange }: Props = $props();
+
 const START_MODES: Array<{ value: LauncherStartMode; label: string; hint: string }> = [
   {
     value: "auto",
@@ -85,6 +97,8 @@ let idleError = $state<string | null>(null);
 let mounted = true;
 onDestroy(() => {
   mounted = false;
+  // A save cut short by an unmount must not leave the host held busy.
+  onBusyChange?.(false);
 });
 
 let saving = false;
@@ -159,6 +173,7 @@ async function save(patch: LauncherSettingsPatch): Promise<void> {
     return;
   }
   saving = true;
+  onBusyChange?.(true);
   saveError = null;
   let startModeChanged = false;
   let next: LauncherSettingsPatch | null = patch;
@@ -169,6 +184,7 @@ async function save(patch: LauncherSettingsPatch): Promise<void> {
       saveError = errorForCode(result.code);
       queued = null;
       saving = false;
+      onBusyChange?.(false);
       // Claude did stop, so the status bar and chat panel must re-read.
       if (result.code === LAUNCHER_ERROR_OFF_NOT_SAVED) {
         window.dispatchEvent(new CustomEvent("tandem:launcher-changed"));
@@ -187,6 +203,7 @@ async function save(patch: LauncherSettingsPatch): Promise<void> {
     if (next === null) show(result.settings);
   }
   saving = false;
+  onBusyChange?.(false);
   unreadable = false;
   // Only the start mode changes what the status bar and chat panel show
   // (choosing Off stops Claude), so only it asks them to re-read.
@@ -225,9 +242,15 @@ const controlsDisabled = $derived(settings === null || readOnly);
   <div class="settings-section-label">Tandem's Claude</div>
   <div class="settings-hint" data-testid="settings-modal-tandem-claude-disclosure">
     Tandem's Claude is a Claude Code session that Tandem runs in the background, so it can answer
-    your chat and comments. Once started, it keeps running in the background until Tandem itself
-    stops, you turn it off, or — if you choose below — it has been idle for a while. An idle stop
-    keeps its conversation: starting it again picks up where it left off.
+    your chat and comments.
+    {#if startModeOnly}
+      Choose when it starts. How long it runs, and this choice too, can be changed any time in
+      Settings → AI Assistant.
+    {:else}
+      Once started, it keeps running in the background until Tandem itself stops, you turn it off,
+      or — if you choose below — it has been idle for a while. An idle stop keeps its conversation:
+      starting it again picks up where it left off.
+    {/if}
   </div>
 
   {#if loadError}
@@ -277,6 +300,7 @@ const controlsDisabled = $derived(settings === null || readOnly);
     {/each}
   </fieldset>
 
+  {#if !startModeOnly}
   <fieldset class="tc-fieldset" disabled={controlsDisabled}>
     <legend class="settings-hint tc-legend">How long should it run?</legend>
     {#each LIFETIMES as lifetime (lifetime.value)}
@@ -328,6 +352,7 @@ const controlsDisabled = $derived(settings === null || readOnly);
       </div>
     {/if}
   </fieldset>
+  {/if}
 
   {#if saveError}
     <div role="alert" class="tc-error" data-testid="settings-modal-tandem-claude-save-error">

@@ -14,6 +14,7 @@ import {
   API_INTEGRATIONS_FIRST_RUN,
   API_INTEGRATIONS_INSTALL_CLAUDE_CODE,
   API_INTEGRATIONS_SECRET,
+  API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
   type IntegrationsRoutesDeps,
   registerIntegrationsRoutes,
   TANDEM_CLAUDE_DECISION_MS,
@@ -56,6 +57,8 @@ import {
   ERROR_CODE_PATH_REJECTED,
   ERROR_CODE_SECRET_MISSING,
   ERROR_CODE_UNSUPPORTED_PLATFORM,
+  ERROR_CODE_WALKTHROUGH_NOT_PENDING,
+  ERROR_CODE_WALKTHROUGH_VERSION_MISMATCH,
 } from "../../../src/shared/integrations/contract.js";
 import { useEnvOverride, withEnvOverride } from "../../helpers/env-override.js";
 
@@ -831,6 +834,240 @@ describe("integrations API routes", () => {
       const app = makeApp(deps);
       const res = await request(app, "GET", API_INTEGRATIONS_FIRST_RUN);
       expect(res.body).toMatchObject({ needed: false });
+    });
+  });
+
+  describe("the v1.0 walkthrough (#2198)", () => {
+    beforeEach(() => {
+      _resetApplyGateForTests();
+    });
+
+    /** The marker as the routes see it: owed until confirmed. */
+    function walkthroughSeam(pending = true) {
+      const state: { pending: boolean; via?: string; fail?: boolean } = { pending };
+      const seam = {
+        isPending: vi.fn(() => state.pending),
+        markConfirmed: vi.fn(async (via: "keep" | "apply") => {
+          if (state.fail) throw new Error("EPERM");
+          state.pending = false;
+          state.via = via;
+        }),
+      };
+      return { state, seam };
+    }
+
+    async function writeClaudeCodeRecord(configPath = "/home/user/.claude.json"): Promise<void> {
+      await deps.store.write({
+        schemaVersion: INTEGRATIONS_SCHEMA_VERSION,
+        integrations: [
+          {
+            kind: "claude-code",
+            id: "cc-1",
+            label: "Claude Code",
+            configPath,
+            transport: "http",
+            url: "http://127.0.0.1:3479",
+          },
+        ],
+      });
+    }
+
+    describe(`GET ${API_INTEGRATIONS_FIRST_RUN}`, () => {
+      it("owed: opens the wizard for a user who already has a setup, and says why", async () => {
+        await writeClaudeCodeRecord();
+        const { seam } = walkthroughSeam();
+        // Owed decides it alone: neither file is read.
+        const readExisting = vi.fn(deps.readExisting);
+        deps.readExisting = readExisting;
+        const res = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "GET",
+          API_INTEGRATIONS_FIRST_RUN,
+        );
+        expect(res.body).toMatchObject({ needed: true, walkthrough: true });
+        expect(typeof res.body.launchId).toBe("string");
+        expect(readExisting).not.toHaveBeenCalled();
+      });
+
+      it("control: the same user with no walkthrough owed is not prompted", async () => {
+        await writeClaudeCodeRecord();
+        const { seam } = walkthroughSeam(false);
+        const res = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "GET",
+          API_INTEGRATIONS_FIRST_RUN,
+        );
+        expect(res.body).toMatchObject({ needed: false, walkthrough: false });
+      });
+
+      it("the E2E off switch wins over an owed walkthrough", async () => {
+        const { seam } = walkthroughSeam();
+        await withEnvOverride(TANDEM_DISABLE_FIRST_RUN_WIZARD_ENV, "1", async () => {
+          const res = await request(
+            makeApp({ ...deps, walkthrough: seam }),
+            "GET",
+            API_INTEGRATIONS_FIRST_RUN,
+          );
+          expect(res.body).toMatchObject({ needed: false, walkthrough: false });
+        });
+      });
+    });
+
+    describe(`POST ${API_INTEGRATIONS_WALKTHROUGH_CONFIRM}`, () => {
+      it("Keep records the walkthrough and writes nothing else", async () => {
+        await writeClaudeCodeRecord();
+        const { state, seam } = walkthroughSeam();
+        const hook = vi.fn(async () => "held" as const);
+        const app = makeApp({ ...deps, walkthrough: seam, onClaudeCodeApplied: hook });
+        const write = vi.spyOn(deps.store, "write");
+        const before = (await request(app, "GET", API_INTEGRATIONS_FIRST_RUN)).body;
+        const res = await request(app, "POST", API_INTEGRATIONS_WALKTHROUGH_CONFIRM, {
+          serverVersion: "0.0.0-test",
+        });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ ok: true });
+        expect(state.via).toBe("keep");
+        // Nothing else: no integrations file, no skill, no nonce rotation.
+        expect(write).not.toHaveBeenCalled();
+        expect(installSkillSpy).not.toHaveBeenCalled();
+        const after = (await request(app, "GET", API_INTEGRATIONS_FIRST_RUN)).body;
+        expect(after.confirmationNonce).toBe(before.confirmationNonce);
+        expect(after).toMatchObject({ needed: false, walkthrough: false });
+        // The supervisor is asked once — the boot hold's release (#2198).
+        expect(hook).toHaveBeenCalledTimes(1);
+      });
+
+      it("409 when no walkthrough is owed", async () => {
+        const { seam } = walkthroughSeam(false);
+        const res = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "POST",
+          API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+          { serverVersion: "0.0.0-test" },
+        );
+        expect(res.status).toBe(409);
+        expect(res.body.code).toBe(ERROR_CODE_WALKTHROUGH_NOT_PENDING);
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+      });
+
+      it("409 when the body names another server version (a tab left open across an upgrade)", async () => {
+        const { seam } = walkthroughSeam();
+        const res = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "POST",
+          API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+          { serverVersion: "0.27.0" },
+        );
+        expect(res.status).toBe(409);
+        expect(res.body.code).toBe(ERROR_CODE_WALKTHROUGH_VERSION_MISMATCH);
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+      });
+
+      it("400 without a JSON body: a text/plain simple request confirms nothing", async () => {
+        const { seam } = walkthroughSeam();
+        const res = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "POST",
+          API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+          undefined,
+          { "content-type": "text/plain" },
+        );
+        expect(res.status).toBe(400);
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+      });
+
+      it("refuses a disallowed origin and a non-loopback caller before anything", async () => {
+        const { seam } = walkthroughSeam();
+        const bad = await request(
+          makeApp({ ...deps, walkthrough: seam }),
+          "POST",
+          API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+          { serverVersion: "0.0.0-test" },
+          { Origin: "https://evil.example" },
+        );
+        expect(bad.status).toBe(403);
+        const lan = await request(
+          makeAppWithRemoteAddress({ ...deps, walkthrough: seam }, "192.168.1.50"),
+          "POST",
+          API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+          { serverVersion: "0.0.0-test" },
+        );
+        expect(lan.status).toBe(403);
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+      });
+
+      it("a failed marker write is a 500, and the supervisor is not asked", async () => {
+        const { state, seam } = walkthroughSeam();
+        state.fail = true;
+        const hook = vi.fn(async () => "starting" as const);
+        const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const res = await request(
+            makeApp({ ...deps, walkthrough: seam, onClaudeCodeApplied: hook }),
+            "POST",
+            API_INTEGRATIONS_WALKTHROUGH_CONFIRM,
+            { serverVersion: "0.0.0-test" },
+          );
+          expect(res.status).toBe(500);
+          expect(hook).not.toHaveBeenCalled();
+        } finally {
+          errSpy.mockRestore();
+        }
+      });
+    });
+
+    describe(`a successful ${API_INTEGRATIONS_APPLY} finishes it`, () => {
+      async function applyOnce(
+        seam: NonNullable<IntegrationsRoutesDeps["walkthrough"]>,
+        detect: IntegrationsRoutesDeps["detectTargets"],
+        hook = vi.fn(async () => "starting" as const),
+      ) {
+        const configPath = path.join(tmpDir, "claude-config.json");
+        fs.writeFileSync(configPath, JSON.stringify({ mcpServers: {} }));
+        await writeClaudeCodeRecord(configPath);
+        const app = makeApp({
+          ...deps,
+          detectTargets: detect,
+          shouldRegisterChannelShim: () => false,
+          walkthrough: seam,
+          onClaudeCodeApplied: hook,
+        });
+        const nonce = (await request(app, "GET", API_INTEGRATIONS_FIRST_RUN)).body
+          .confirmationNonce;
+        const res = await request(app, "POST", API_INTEGRATIONS_APPLY, {
+          ids: ["cc-1"],
+          confirmationNonce: nonce,
+        });
+        return { res, hook, configPath };
+      }
+
+      it("every result applied: recorded as done, via apply", async () => {
+        const { state, seam } = walkthroughSeam();
+        const configPath = path.join(tmpDir, "claude-config.json");
+        const { res } = await applyOnce(seam, () => [
+          { label: "Claude Code", configPath, kind: "claude-code" },
+        ]);
+        expect(res.status).toBe(200);
+        expect(res.body.results[0]?.status).toBe("applied");
+        expect(state.via).toBe("apply");
+      });
+
+      it("an errored result leaves it owed", async () => {
+        const { state, seam } = walkthroughSeam();
+        // Nothing detected → the claude-code entry answers TARGET_NOT_DETECTED.
+        const { res } = await applyOnce(seam, () => []);
+        expect(res.status).toBe(200);
+        expect(res.body.results[0]?.status).toBe("error");
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+        expect(state.pending).toBe(true);
+      });
+
+      it("not owed: an Apply writes no marker", async () => {
+        const { seam } = walkthroughSeam(false);
+        const configPath = path.join(tmpDir, "claude-config.json");
+        await applyOnce(seam, () => [{ label: "Claude Code", configPath, kind: "claude-code" }]);
+        expect(seam.markConfirmed).not.toHaveBeenCalled();
+      });
     });
   });
 

@@ -21,7 +21,7 @@
 
 import { cleanup, render, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   IntegrationWizardState,
   PickedIntegration,
@@ -40,6 +40,10 @@ const wizardStub: {
   tandemClaude: string | null;
   /** `/health.hasSession`'s latch, which Tandem's own child also sets. */
   claudeConnected: boolean;
+  existing: IntegrationWizardState["existing"];
+  hasSetupToKeep: boolean;
+  keepError: string | null;
+  keepResult: boolean;
   channelRegistered: boolean | null;
   /**
    * Delegated to a `$state` cell (#1432). A plain field here would be read
@@ -53,6 +57,10 @@ const wizardStub: {
   applyResults: [],
   tandemClaude: null,
   claudeConnected: false,
+  existing: [],
+  hasSetupToKeep: false,
+  keepError: null,
+  keepResult: true,
   channelRegistered: null,
   get step(): WizardStep {
     return wizardStepCell.value as WizardStep;
@@ -61,6 +69,10 @@ const wizardStub: {
     wizardStepCell.set(next);
   },
 };
+
+const { keepSetupSpy } = vi.hoisted(() => ({
+  keepSetupSpy: vi.fn(async (_version: string) => true),
+}));
 
 vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -76,7 +88,17 @@ vi.mock(import("../../src/client/hooks/useIntegrationWizard.svelte"), async (imp
       return wizardStub.step;
     },
     detecting: false,
-    existing: [],
+    get existing() {
+      return wizardStub.existing;
+    },
+    get hasSetupToKeep() {
+      return wizardStub.hasSetupToKeep;
+    },
+    get keepError() {
+      return wizardStub.keepError;
+    },
+    keepSetup: keepSetupSpy,
+    pickedForInstall: vi.fn(() => null),
     get picked() {
       return wizardStub.picked;
     },
@@ -850,5 +872,126 @@ describe("IntegrationWizardModal — Tandem's own Claude on the done screen (#21
     const { container } = mountDone([pickedDesktop()], [applied("claude-desktop-1")]);
     await tick();
     expect(q(container, "integration-wizard-tandem-claude")).toBeNull();
+  });
+});
+
+describe("IntegrationWizardModal — the v1.0 walkthrough (#2198)", () => {
+  const codeInstall = {
+    target: { kind: "claude-code", label: "Claude Code", configPath: "/home/u/.claude.json" },
+    status: "ok",
+  } as IntegrationWizardState["existing"][number];
+  let originalFetch: typeof fetch;
+
+  beforeEach(() => {
+    // The embedded start choice reads the launcher; nothing answers here.
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("{}", {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      })) as never;
+    wizardStub.step = "connect";
+    wizardStub.existing = [codeInstall];
+    wizardStub.picked = [pickedCode()];
+  });
+
+  afterEach(() => {
+    cleanup();
+    globalThis.fetch = originalFetch;
+    wizardStub.picked = [];
+    wizardStub.applyResults = [];
+    wizardStub.existing = [];
+    wizardStub.hasSetupToKeep = false;
+    wizardStub.keepError = null;
+    keepSetupSpy.mockReset();
+    keepSetupSpy.mockImplementation(async () => true);
+    wizardStepCell.reset();
+  });
+
+  function mountWalkthrough(extra: Record<string, unknown> = {}) {
+    const onClose = vi.fn();
+    const onWalkthroughKept = vi.fn();
+    const r = render(IntegrationWizardModal, {
+      props: { open: true, onClose, walkthroughVersion: "1.0.0", onWalkthroughKept, ...extra },
+    });
+    return { ...r, onClose, onWalkthroughKept };
+  }
+
+  it("a user with a setup: Keep this setup is the primary action, with the walkthrough copy", async () => {
+    wizardStub.hasSetupToKeep = true;
+    const { container } = mountWalkthrough();
+    await tick();
+    const keep = q(container, "integration-wizard-keep-setup");
+    expect(keep?.textContent?.trim()).toBe("Keep this setup");
+    expect(keep?.className).toContain("iw-btn-primary");
+    expect(q(container, "integration-wizard-connect-btn")?.className).toContain("iw-btn-secondary");
+    expect(q(container, "integration-wizard-walkthrough-intro")).not.toBeNull();
+    expect(q(container, "integration-wizard-reopen-hint")?.textContent).toMatch(
+      /opens again the next time you start Tandem/,
+    );
+    expect(q(container, "integration-wizard-start-mode")).not.toBeNull();
+  });
+
+  it("nothing set up but something to connect: Continue without connecting, and Connect stays primary", async () => {
+    const { container } = mountWalkthrough();
+    await tick();
+    const keep = q(container, "integration-wizard-keep-setup");
+    expect(keep?.textContent?.trim()).toBe("Continue without connecting");
+    expect(keep?.className).toContain("iw-btn-secondary");
+    expect(q(container, "integration-wizard-connect-btn")?.className).toContain("iw-btn-primary");
+  });
+
+  it("Keep confirms the version it was shown for, tells App, then closes", async () => {
+    wizardStub.hasSetupToKeep = true;
+    const { container, onClose, onWalkthroughKept } = mountWalkthrough();
+    await tick();
+    q(container, "integration-wizard-keep-setup")?.click();
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(keepSetupSpy).toHaveBeenCalledWith("1.0.0");
+    expect(onWalkthroughKept).toHaveBeenCalledTimes(1);
+    expect(onWalkthroughKept.mock.invocationCallOrder[0]).toBeLessThan(
+      onClose.mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  it("a failed Keep stays open and shows the hook's error", async () => {
+    // The hook sets `keepError` (pinned in useIntegrationWizard.test.ts); here,
+    // that a refused Keep closes nothing and the message renders.
+    wizardStub.hasSetupToKeep = true;
+    wizardStub.keepError = "Could not save that you kept your setup.";
+    keepSetupSpy.mockImplementation(async () => false);
+    const { container, onClose, onWalkthroughKept } = mountWalkthrough();
+    await tick();
+    expect(q(container, "integration-wizard-keep-error")?.textContent).toMatch(/Could not save/);
+    q(container, "integration-wizard-keep-setup")?.click();
+    await vi.waitFor(() => expect(keepSetupSpy).toHaveBeenCalled());
+    await tick();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onWalkthroughKept).not.toHaveBeenCalled();
+  });
+
+  it("a failing Apply does not trap the user: Keep is offered on the done screen", async () => {
+    wizardStub.hasSetupToKeep = true;
+    wizardStub.step = "done";
+    wizardStub.applyResults = [
+      { id: "claude-code-1", status: "error", code: "WRITE_FAILED", message: "x" } as never,
+    ];
+    wizardStub.keepError = "Could not save that you kept your setup.";
+    const { container } = mountWalkthrough();
+    await tick();
+    // A neutral label — what was read at open no longer says what is set up —
+    // and a refusal is shown here too, not only on the connect step.
+    expect(q(container, "integration-wizard-keep-setup")?.textContent?.trim()).toBe(
+      "Keep things as they are",
+    );
+    expect(q(container, "integration-wizard-keep-error")?.textContent).toMatch(/Could not save/);
+  });
+
+  it("control: no walkthrough, no Keep, the ordinary copy", async () => {
+    const r = render(IntegrationWizardModal, { props: { open: true, onClose: vi.fn() } });
+    await tick();
+    expect(q(r.container, "integration-wizard-keep-setup")).toBeNull();
+    expect(q(r.container, "integration-wizard-start-mode")).toBeNull();
+    expect(q(r.container, "integration-wizard-reopen-hint")?.textContent).toMatch(/Not now\?/);
   });
 });

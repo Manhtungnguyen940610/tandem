@@ -114,3 +114,66 @@ describe("App greeting and done-screen wiring (#2197)", () => {
     expect(tag).toMatch(/standby: aiReadiness\.launcherStandby,/);
   });
 });
+
+describe("App v1.0 walkthrough wiring (#2198)", () => {
+  /** A function body, from its declaration to the next top-level `}`. */
+  function fn(name: string): string {
+    const start = APP.indexOf(`function ${name}(`);
+    expect(start).toBeGreaterThan(-1);
+    return APP.slice(start, APP.indexOf("\n}\n", start));
+  }
+
+  it("auto-open goes through resolveWizardAutoOpen, fed the walkthrough and the session flag", () => {
+    const d = APP.slice(APP.indexOf("const isAutoOpenFirstRun = $derived("));
+    const body = d.slice(0, d.indexOf("}),\n);"));
+    expect(body).toMatch(/resolveWizardAutoOpen\(\{/);
+    expect(body).toMatch(/walkthrough: firstRun\.walkthrough,/);
+    // Keyed on the server's launch, so a tab open across a restart gets it back.
+    expect(body).toMatch(
+      /closedThisSession:\s*wizardClosedThisPage \|\|\s*\(firstRun\.launchId !== null && wizardClosedForLaunch === firstRun\.launchId\),/,
+    );
+    expect(body).toMatch(/dismissedForVersion,/);
+  });
+
+  it("closing the walkthrough ends it for the session only, never for the version", () => {
+    const close = fn("closeIntegrationWizard");
+    expect(close).toMatch(
+      /if \(!firstRun\.walkthrough\) dismissForVersion\(firstRun\.serverVersion\);/,
+    );
+    expect(close).toMatch(/markClosedThisLaunch\(\);/);
+    // A successful Apply or Keep may have ended it on the server: re-read.
+    expect(close).toMatch(/if \(firstRun\.walkthrough\) void firstRun\.refetch\(\);/);
+  });
+
+  it("the page-memory fallback is only for a server that sends no launchId", () => {
+    const mark = fn("markClosedThisLaunch");
+    expect(mark).toMatch(/if \(launch === null\) \{\s*wizardClosedThisPage = true;\s*return;\s*\}/);
+    expect(mark).toMatch(/localStorage\.setItem\(WIZARD_CLOSED_LAUNCH_KEY, launch\)/);
+  });
+
+  it("Keep also dismisses the first-run rule, and the wizard gets both walkthrough props", () => {
+    expect(fn("onWalkthroughKept")).toMatch(/dismissForVersion\(firstRun\.serverVersion\)/);
+    const mount = APP.slice(APP.indexOf("<IntegrationWizardModal"));
+    const props = mount.slice(0, mount.indexOf("/>"));
+    expect(props).toMatch(/\{walkthroughVersion\}/);
+    expect(props).toMatch(/\{onWalkthroughKept\}/);
+  });
+
+  it("the in-memory dismissal is set even when localStorage throws", () => {
+    const dismiss = fn("dismissForVersion");
+    expect(dismiss.indexOf("dismissedForVersion = version;")).toBeLessThan(
+      dismiss.indexOf("localStorage.setItem"),
+    );
+  });
+
+  it("another tab's close latches this tab's open wizard rather than unmounting it", () => {
+    const start = APP.indexOf("const onStorage = (ev: StorageEvent) => {");
+    const body = APP.slice(start, APP.indexOf("};", start));
+    expect(body).toMatch(
+      /\(ev\.key === WIZARD_DISMISSED_KEY \|\| ev\.key === WIZARD_CLOSED_LAUNCH_KEY\) &&\s*isAutoOpenFirstRun\s*\) \{\s*manuallyReopened = true;/,
+    );
+    expect(body.indexOf("manuallyReopened = true")).toBeLessThan(
+      body.indexOf("wizardClosedForLaunch = ev.newValue"),
+    );
+  });
+});
