@@ -261,7 +261,14 @@ const inboxItemDocumentIdField = z
     "The document this item belongs to. A default poll covers every open document, so pass it when acting on the item (#2187)",
   );
 
-const userActionSchema = z.object({
+/**
+ * The per-bucket item schemas are EXPORTED because `tandem_checkInbox` admits
+ * each item against its bucket's schema before stamping it delivered (PR #2225
+ * review): the SDK validates the WHOLE response with these same schemas, so one
+ * malformed client-written record used to fail every item in the poll — after
+ * the ledgers had already been stamped.
+ */
+export const userActionSchema = z.object({
   ...annotationBaseShape,
   author: z.literal("user"),
   type: z.literal("comment"),
@@ -271,7 +278,7 @@ const userActionSchema = z.object({
   alreadyPushed: alreadyPushedField,
 });
 
-const userResponseSchema = z.object({
+export const userResponseSchema = z.object({
   ...annotationBaseShape,
   author: z.literal("claude"),
   status: z.enum(["accepted", "dismissed"]),
@@ -279,7 +286,7 @@ const userResponseSchema = z.object({
   documentId: inboxItemDocumentIdField,
 });
 
-const inboxChatMessageSchema = z.object({
+export const inboxChatMessageSchema = z.object({
   id: z.string(),
   text: z.string(),
   timestamp: z.number(),
@@ -294,7 +301,7 @@ const inboxChatMessageSchema = z.object({
 // WS-A2: user replies surfaced via checkInbox (the pull-release path for a
 // reply held in Solo). `author` is always "user" — Claude's own replies and
 // private/note-thread replies are filtered out (ADR-027, via channelVisibleReplies).
-const inboxUserReplySchema = z.object({
+export const inboxUserReplySchema = z.object({
   id: z.string(),
   annotationId: z.string(),
   author: z.literal("user"),
@@ -328,7 +335,7 @@ export const checkInboxOutputShape = {
       .string()
       .nullable()
       .describe(
-        "The document this activity describes: the named one, or on a default poll the active one (null when none is active). The item buckets may come from other documents",
+        "The document this activity describes: the named one, or on a default poll the active one. Null only when none is active (or a named document is not open); when that document could not be read it is still named and the other fields are empty. The item buckets may come from other documents",
       ),
     isTyping: z.boolean(),
     cursor: z.number().nullable(),

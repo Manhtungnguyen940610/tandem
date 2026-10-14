@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyAiRefusal,
   type DeliveryState,
+  deliveryItemKey,
   getDeliveryState,
   isUnansweredAsk,
   noteExternalConsumerAttached,
@@ -366,6 +367,87 @@ describe("delivery-state", () => {
     it("does not count document:* lifecycle", () => {
       expect(isUnansweredAsk(ev("document:switched"))).toBe(false);
       expect(isUnansweredAsk(ev("document:opened"))).toBe(false);
+    });
+  });
+
+  // PR #2225 review: since #2187 a default poll can return while leaving items
+  // behind — a document isolated as unreadable, a record refused as malformed.
+  // A round waiting on one of those items is not delivered.
+  describe("item-scoped holds", () => {
+    const item = (documentId: string, itemId: string) => ({ documentId, itemId });
+    const none = { documents: new Set<string>(), items: new Set<string>() };
+
+    it("stays open while the poll could not read the item's document", () => {
+      recordWakeForward(T0, item("doc-a", "ann-1"));
+      recordInboxPoll(T0 + 100);
+      resolveDeliveryRound(T0 + 100, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 200, 1)).toMatchObject({
+        state: "awaiting-poll",
+        waitingMs: 200,
+      });
+
+      // The next poll reads it: the round closes, timed from the FIRST forward.
+      resolveDeliveryRound(T0 + 300, none);
+      expect(getDeliveryState(T0 + 300, 1)).toMatchObject({ state: "polled", latencyMs: 300 });
+    });
+
+    it("an item refusal holds only the round waiting on that item", () => {
+      recordWakeForward(T0, item("doc-a", "ann-1"));
+      resolveDeliveryRound(T0 + 1, {
+        documents: new Set(),
+        items: new Set([deliveryItemKey("doc-a", "ann-2")]),
+      });
+      expect(getDeliveryState(T0 + 1, 1).state).toBe("polled");
+
+      recordWakeForward(T0 + 2, item("doc-a", "ann-2"));
+      resolveDeliveryRound(T0 + 3, {
+        documents: new Set(),
+        items: new Set([deliveryItemKey("doc-a", "ann-2")]),
+      });
+      expect(getDeliveryState(T0 + 3, 1).state).toBe("awaiting-poll");
+    });
+
+    it("forgets the items a held poll DID deliver", () => {
+      // doc-a's item was delivered by the held poll; only doc-b's held it. A
+      // later poll that cannot read doc-a must not re-hold the round on an item
+      // it already handed over.
+      recordWakeForward(T0, item("doc-a", "ann-a"));
+      recordWakeForward(T0 + 1, item("doc-b", "ann-b"));
+      resolveDeliveryRound(T0 + 2, { documents: new Set(["doc-b"]), items: new Set() });
+      expect(getDeliveryState(T0 + 2, 1).state).toBe("awaiting-poll");
+
+      resolveDeliveryRound(T0 + 3, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 3, 1).state).toBe("polled");
+    });
+
+    it("a forward naming no item closes on any successful poll", () => {
+      recordWakeForward(T0);
+      resolveDeliveryRound(T0 + 1, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 1, 1).state).toBe("polled");
+    });
+
+    it("a fresh round after an abandonment drops the superseded round's items", () => {
+      recordWakeForward(T0, item("doc-a", "ann-old"));
+      noteExternalConsumersGone();
+      recordWakeForward(T0 + 10, item("doc-b", "ann-new"));
+      resolveDeliveryRound(T0 + 20, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 20, 1).state).toBe("polled");
+    });
+
+    it("a resolved round leaves no items behind for the next one", () => {
+      recordWakeForward(T0, item("doc-a", "ann-1"));
+      resolveDeliveryRound(T0 + 1);
+      recordWakeForward(T0 + 2);
+      resolveDeliveryRound(T0 + 3, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 3, 1).state).toBe("polled");
+    });
+
+    it("reset clears the pending items", () => {
+      recordWakeForward(T0, item("doc-a", "ann-1"));
+      resetDeliveryStateForTests();
+      recordWakeForward(T0 + 1);
+      resolveDeliveryRound(T0 + 2, { documents: new Set(["doc-a"]), items: new Set() });
+      expect(getDeliveryState(T0 + 2, 1).state).toBe("polled");
     });
   });
 
