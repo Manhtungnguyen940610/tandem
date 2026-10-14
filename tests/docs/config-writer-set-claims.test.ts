@@ -258,6 +258,10 @@ const DURABLE_WRITER_FILES: Record<string, number> = {
   "src/server/integrations/apply.ts": 9,
   "src/server/integrations/install-claude-cli.ts": 2,
   "src/server/integrations/storage.ts": 8,
+  // #2195: `launcher-settings.json` (start mode and lifetime of Tandem's
+  // Claude), through `atomicWriteConfigFile`. Tandem's OWN app-data root, never
+  // a Claude config file, so the accepted #1599 scope is unchanged.
+  "src/server/launcher/settings.ts": 1,
   "src/server/launcher/supervisor.ts": 1,
   "src/server/license/license-state.ts": 2,
   "src/server/mcp/annotations.ts": 1,

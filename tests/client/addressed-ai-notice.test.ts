@@ -282,6 +282,15 @@ describe("noticeAction", () => {
     expect(t.cta).toBe("setup");
   });
 
+  it("no-agent with the start chip (#2195): says nothing will answer until Start, not 'when one connects'", () => {
+    const t = act({ kind: "no-agent", chip: "start" });
+    expect(t.cta).toBe("start");
+    expect(t.message).toContain("nothing will answer until you start it");
+    expect(t.message).not.toContain("when one connects");
+    // Control: any other chip keeps the connect copy.
+    expect(act({ kind: "no-agent", chip: "restart" }).message).toContain("when one connects");
+  });
+
   it("no-push: info, no CTA", () => {
     const t = act({ kind: "no-push" });
     expect(t.idPrefix).toBe("ai-no-push");

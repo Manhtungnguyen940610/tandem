@@ -1137,6 +1137,7 @@ export async function startMcpServerHttp(
       unavailableReason: launcher.unavailableReason,
       startSupervisor: launcher.startSupervisor,
       store: createIntegrationsStore(resolveAppDataDir()),
+      settingsBase: resolveAppDataDir(),
       getSkillRefreshError,
       isClaudeSessionAttached,
       // Tandem's own auto-opened documents. `welcome.md` opens on first run and

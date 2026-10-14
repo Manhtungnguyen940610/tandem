@@ -19,6 +19,9 @@ function renderChat(messages: ChatMessage[]) {
       onClear: async () => {},
       onExport: async () => {},
       onInsert: () => false,
+      tandemClaudeControl: null,
+      onStartClaude: () => {},
+      onTurnOffClaude: () => {},
       aiDisabled: false,
     },
   });
@@ -131,11 +134,57 @@ describe("ChatPanel — the {@html} sink is routed through renderMarkdown", () =
   });
 });
 
-/**
- * #1521: while the licence refuses the AI the composer and send are disabled
- * and Enter sends nothing; the history stays readable. The twin is the normal
- * send path with `aiDisabled: false`.
- */
+describe("ChatPanel — Tandem's Claude Start / Turn off control (#2195)", () => {
+  function renderWithControl(control: "start" | "turn-off" | null, messages: ChatMessage[] = []) {
+    const onStartClaude = vi.fn();
+    const onTurnOffClaude = vi.fn();
+    const result = render(ChatPanel, {
+      props: {
+        messages,
+        editor: null,
+        activeDocId: null,
+        openDocs: [],
+        capturedAnchor: null,
+        onCapturedAnchorChange: () => {},
+        onSend: () => true,
+        onClear: async () => {},
+        onExport: async () => {},
+        onInsert: () => false,
+        tandemClaudeControl: control,
+        onStartClaude,
+        onTurnOffClaude,
+        aiDisabled: false,
+      },
+    });
+    const btn = result.container.querySelector<HTMLButtonElement>(
+      "[data-testid='chat-tandem-claude-toggle']",
+    );
+    return { ...result, btn, onStartClaude, onTurnOffClaude };
+  }
+
+  it("shows Start on an EMPTY chat — where it is most needed — and calls onStartClaude", () => {
+    const { btn, onStartClaude, onTurnOffClaude, container } = renderWithControl("start");
+    expect(btn).not.toBeNull();
+    expect(btn?.textContent?.trim()).toBe("Start Tandem's Claude");
+    btn?.click();
+    expect(onStartClaude).toHaveBeenCalledOnce();
+    expect(onTurnOffClaude).not.toHaveBeenCalled();
+    // Export/Clear stay tied to there being messages.
+    expect(container.querySelector("[data-testid='clear-chat-btn']")).toBeNull();
+  });
+
+  it("shows Turn off while it runs, naming Tandem's Claude", () => {
+    const { btn, onTurnOffClaude } = renderWithControl("turn-off", [claudeMsg()]);
+    expect(btn?.textContent?.trim()).toBe("Turn off Tandem's Claude");
+    btn?.click();
+    expect(onTurnOffClaude).toHaveBeenCalledOnce();
+  });
+
+  it("is absent when there is nothing to start or stop", () => {
+    expect(renderWithControl(null).btn).toBeNull();
+  });
+});
+
 describe("ChatPanel — AI off by licence", () => {
   function mount(aiDisabled: boolean) {
     const onSend = vi.fn(() => true);
@@ -152,6 +201,9 @@ describe("ChatPanel — AI off by licence", () => {
         onExport: async () => {},
         onInsert: () => false,
         aiDisabled,
+        tandemClaudeControl: null,
+        onStartClaude: () => {},
+        onTurnOffClaude: () => {},
       },
     });
     const input = r.container.querySelector<HTMLTextAreaElement>(

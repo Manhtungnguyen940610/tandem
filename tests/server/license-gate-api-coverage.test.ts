@@ -178,7 +178,12 @@ const ROUTE_GATES: RouteGate[] = [
   {
     constant: "API_LAUNCHER_START",
     gate: "refused-by-supervisor",
-    why: "deferred autostart: the supervisor is created, `startInternal` refuses by returning, the route answers 403 and activation resumes it",
+    why: "deferred autostart: the supervisor is created, `startInternal` refuses by returning, the route answers 403 and activation resumes it; the Start control (`userInitiated`, #2195) goes through `respawn`, which refuses before stopping or changing anything",
+  },
+  {
+    constant: "API_LAUNCHER_SETTINGS",
+    gate: "open",
+    why: "the start mode and lifetime of Tandem's Claude (#2195); nothing on it starts Claude, and turning Claude off must never be refused",
   },
   {
     constant: "API_LAUNCHER_WORKING_DIRECTORY",

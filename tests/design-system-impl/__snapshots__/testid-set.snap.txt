@@ -53,6 +53,7 @@ chat-pickup-live
 chat-pickup-status
 chat-send-btn
 chat-tab
+chat-tandem-claude-toggle
 claude-code-ai-off-hint
 claude-typing-indicator-{*}
 claude-working-indicator
@@ -161,6 +162,7 @@ empty-state-retry
 empty-state-setup-claude
 empty-state-setup-restart-anyway
 empty-state-sign-in-recheck
+empty-state-start-claude
 empty-state-start-fresh
 error-boundary-recover-btn
 error-boundary-reload-btn
@@ -442,6 +444,17 @@ settings-modal-sidebar-footer
 settings-modal-sidebar-version
 settings-modal-solo-rail-hidden-toggle
 settings-modal-tab-{*}
+settings-modal-tandem-claude
+settings-modal-tandem-claude-absent
+settings-modal-tandem-claude-disclosure
+settings-modal-tandem-claude-idle-error
+settings-modal-tandem-claude-idle-minutes
+settings-modal-tandem-claude-lifetime-{*}
+settings-modal-tandem-claude-load-error
+settings-modal-tandem-claude-readonly
+settings-modal-tandem-claude-save-error
+settings-modal-tandem-claude-start-{*}
+settings-modal-tandem-claude-unreadable
 settings-modal-view-changelog-btn
 settings-modal-view-documentation-btn
 settings-modal-view-license-btn

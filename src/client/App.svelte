@@ -16,8 +16,10 @@ import {
   saveStore,
   shouldAutoOpenScratchpad,
   startFreshClaudeCode,
+  startTandemClaude,
   triggerSave,
   triggerSaveAs,
+  turnOffTandemClaude,
 } from "./actions/builtin.svelte.js";
 import { mountActionExecutor } from "./actions/executor.js";
 import { effectiveBindingLabels } from "./actions/keybindings.js";
@@ -55,7 +57,12 @@ import ScrollPill from "./editor/ScrollPill.svelte";
 import SourceView from "./editor/SourceView.svelte";
 import Toolbar from "./editor/toolbar/Toolbar.svelte";
 import { createAccentHue } from "./hooks/useAccentHue.svelte";
-import { AI_CTA, createAiReadiness, ctaHandler } from "./hooks/useAiReadiness.svelte";
+import {
+  AI_CTA,
+  type AiCtaAction,
+  createAiReadiness,
+  ctaHandler,
+} from "./hooks/useAiReadiness.svelte";
 import {
   nextAnnotationId,
   prevAnnotationId,
@@ -464,6 +471,7 @@ const cwdDriftView = $derived(
     aiReadiness.chip,
     aiReadiness.launcherFailure,
     aiReadiness.launcherRestarting,
+    aiReadiness.launcherStandby,
   ),
 );
 
@@ -618,6 +626,43 @@ function startFreshClaude(): void {
   startFreshClaudeCode();
 }
 
+/** The Start control (#2195): start Tandem's Claude from standby. The re-probe
+ *  is the action's own, as with `restartClaude`. */
+function startClaude(): void {
+  startTandemClaude();
+}
+
+/** The off switch (#2195), from the chat panel. */
+function turnOffClaude(): void {
+  turnOffTandemClaude();
+}
+
+/** The chat panel's Start / Turn off control (#2195): Turn off while Tandem's
+ *  Claude runs, Start while it is in standby, hidden otherwise (no launcher,
+ *  a failure — whose own CTA is elsewhere — or a restart in progress). */
+const tandemClaudeControl = $derived<"start" | "turn-off" | null>(
+  aiReadiness.launcherRunning
+    ? "turn-off"
+    : // Not while the licence refuses the AI (#1521): Start would be refused.
+      aiReadiness.aiNotice === null &&
+        aiReadiness.launcherStandby !== null &&
+        !aiReadiness.launcherRestarting
+      ? "start"
+      : null,
+);
+
+/** Every `AiCtaAction` → its handler, through the one dispatcher
+ *  (`ctaHandler`, #1268, #1521, #2195). A binary `action === "restart" ? … : …`
+ *  would send the `start` CTA to the integration wizard. */
+function aiCtaHandler(action: AiCtaAction): () => void {
+  return ctaHandler(action, {
+    connect: connectAi,
+    restart: restartClaude,
+    start: startClaude,
+    openLicenseSettings,
+  });
+}
+
 // #1018 loud failures: ChatPanel (chat send) and Toolbar ("Send to Claude"
 // comment) dispatch `tandem:addressed-ai` AFTER persisting. Two DIFFERENT
 // silences get a notice here, and they are not the same problem:
@@ -687,7 +732,7 @@ $effect(() => {
 
     // The branching lives in the pure, exhaustive `noticeAction`; App only pushes
     // what it returns. The CTA is dispatched through `ctaHandler`, never a binary
-    // ternary: `chip` has five non-null members, and a `=== "connect"` test once
+    // ternary: `chip` has six non-null members, and a `=== "connect"` test once
     // sent `setup` (Claude CLI not installed) down the restart branch.
     const toast = noticeAction(notice, noun);
     const cta = toast.cta;
@@ -704,11 +749,7 @@ $effect(() => {
         ? undefined
         : {
             label: AI_CTA[cta].label,
-            onClick: ctaHandler(AI_CTA[cta].action, {
-              connect: connectAi,
-              restart: restartClaude,
-              openLicenseSettings,
-            }),
+            onClick: aiCtaHandler(AI_CTA[cta].action),
           },
     );
   };
@@ -810,6 +851,16 @@ $effect(() => {
   };
   window.addEventListener("tandem:open-integration-wizard", onOpen);
   return () => window.removeEventListener("tandem:open-integration-wizard", onOpen);
+});
+
+// #2195: the Settings section changed the start mode of Tandem's Claude.
+// Choosing Off has already stopped it by the time the save answers, so one
+// status read brings the pill and chat panel up to date without waiting out a
+// whole poll.
+$effect(() => {
+  const onChanged = () => aiReadiness.refreshLauncherStatus();
+  window.addEventListener("tandem:launcher-changed", onChanged);
+  return () => window.removeEventListener("tandem:launcher-changed", onChanged);
 });
 let settingsBtnEl = $state<HTMLButtonElement | null>(null);
 
@@ -2663,6 +2714,9 @@ const shouldShowModelPicker = $derived(
             onInsert={insertChatMessage}
             canInsert={chatCanInsert}
             reduceMotion={settingsState.settings.reduceMotion}
+            tandemClaudeControl={tandemClaudeControl}
+            onStartClaude={startClaude}
+            onTurnOffClaude={turnOffClaude}
             visible={chatVisible}
             aiDisabled={licenseStore.ui.aiOff}
           />
@@ -2716,6 +2770,9 @@ const shouldShowModelPicker = $derived(
       aiLauncherBusy={aiReadiness.launcherBusy}
       aiLauncherAttached={aiReadiness.launcherAttached}
       aiLauncherRestarting={aiReadiness.launcherRestarting}
+      aiLauncherStarting={aiReadiness.launcherStarting}
+      aiLauncherStandby={aiReadiness.launcherStandby}
+      aiLauncherStandbyRecent={aiReadiness.launcherStandbyRecent}
       aiSessionCount={aiReadiness.sessionCount}
       aiLauncherFailure={aiReadiness.launcherFailure}
       aiLauncherFailureDismissed={launcherFailureShown === null}
@@ -2723,6 +2780,7 @@ const shouldShowModelPicker = $derived(
       aiChip={aiReadiness.chip}
       onConnectAi={connectAi}
       onRestartClaude={restartClaude}
+      onStartClaude={startClaude}
       onOpenLicenseSettings={openLicenseSettings}
       aiNotice={aiReadiness.aiNotice}
       soloMode={modeState.tandemMode === "solo"}
@@ -3188,6 +3246,7 @@ const shouldShowModelPicker = $derived(
               onConnectAi={connectAi}
               onRestartClaude={restartClaude}
               onStartFreshClaude={startFreshClaude}
+              onStartClaude={startClaude}
               aiNotice={aiReadiness.aiNotice}
               onOpenLicenseSettings={openLicenseSettings}
             />

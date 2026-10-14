@@ -157,6 +157,7 @@ more lines in `__snapshots__/testid-set.snap.txt`.
 
 ### Side panels & rails
 - `left-outline-rail`, `annotations-tab`, `chat-tab`
+- `chat-tandem-claude-toggle` — Start / Turn off for Tandem's Claude in the chat panel header (#2195; `data-action` is `start` or `turn-off`)
 - `clear-chat-btn`, `held-banner`, `store-readonly-banner`,
   `store-readonly-dismiss`, `peek-strip-{*}`,
   `panel-edge-collapse-{*}` (resize-handle selectors synthesized — see Known
@@ -214,6 +215,8 @@ more lines in `__snapshots__/testid-set.snap.txt`.
 - `settings-modal-sidebar-{version,footer}`,
   `settings-modal-mcp-status`, `settings-modal-tab-{*}`,
   `settings-modal-display-name`, `settings-modal-shortcuts-list`,
+  `settings-modal-tandem-claude{,-disclosure,-load-error,-readonly,-unreadable,-absent,-save-error,-idle-minutes,-idle-error}`,
+  `settings-modal-tandem-claude-start-{*}`, `settings-modal-tandem-claude-lifetime-{*}` (#2195),
   `settings-modal-app-info-footer`
 - `settings-modal-solo-rail-hidden-toggle`,
   `settings-modal-dwell-time-slider`,
@@ -401,7 +404,7 @@ site.
 
 ### Empty states (3.11 D5)
 - `empty-state-open-file` (state A primary), `empty-state-retry` + `empty-state-open-settings` (state C)
-- State A AI-readiness CTA (#1268, keyed 1:1 off the `useAiReadiness` `chip` value — never re-derive from `lastError` in the view): `empty-state-connect-ai` (`aiChip: "connect"`), `empty-state-setup-claude` (`aiChip: "setup"` — keyed off `lastError === "cli-unusable"`, a filesystem probe the supervisor takes when the circuit breaker trips), `empty-state-setup-restart-anyway` (`aiChip: "setup"` secondary — the escape for a false-negative probe, so the branch is not a dead end), `empty-state-restart-claude` (`aiChip: "restart"` primary), `empty-state-start-fresh` (`aiChip: "restart"` secondary — irreversible, never the default handler), `empty-state-open-license-settings` (`aiChip: "unlicensed"` — the licence refuses the AI, #1521; opens Settings → License)
+- State A AI-readiness CTA (#1268, keyed 1:1 off the `useAiReadiness` `chip` value — never re-derive from `lastError` in the view): `empty-state-connect-ai` (`aiChip: "connect"`), `empty-state-setup-claude` (`aiChip: "setup"` — keyed off `lastError === "cli-unusable"`, a filesystem probe the supervisor takes when the circuit breaker trips), `empty-state-setup-restart-anyway` (`aiChip: "setup"` secondary — the escape for a false-negative probe, so the branch is not a dead end), `empty-state-restart-claude` (`aiChip: "restart"` primary), `empty-state-start-fresh` (`aiChip: "restart"` secondary — irreversible, never the default handler), `empty-state-open-license-settings` (`aiChip: "ai-off"` — the licence refuses the AI, #1521; opens Settings → License), `empty-state-start-claude` (`aiChip: "start"` — Tandem's Claude in standby, #2195)
 
 ### Licensing gate (#1116, ships dark)
 - `license-trial-banner`, `license-trial-days` (trial countdown banner)

@@ -186,7 +186,13 @@ export function noticeAction(notice: AddressedAiNotice, noun: string): Addressed
         severity: "warning",
         // Past tense on the observation because `warning` never expires —
         // see the tense rule on `TandemNotification.severity`.
-        message: `${noun} saved while no AI was connected. It'll be seen when one connects.`,
+        // The `start` chip (#2195) is Tandem's Claude stopped by choice:
+        // "when one connects" would be wrong — nothing is going to connect
+        // until the user starts it.
+        message:
+          notice.chip === "start"
+            ? `${noun} saved. Tandem's Claude isn't running, so nothing will answer until you start it.`
+            : `${noun} saved while no AI was connected. It'll be seen when one connects.`,
         cta: notice.chip,
       };
     case "no-push":
