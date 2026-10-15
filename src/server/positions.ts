@@ -781,13 +781,19 @@ export function remapRangeAcrossReplacement(
  * against, and refusing would strand every pre-snapshot record permanently. The
  * collapse arm deliberately requires a snapshot instead: see its own comment.
  *
- * An out-of-bounds stored range slices to `""` and therefore contradicts, which
- * is the clamp #1765's body asks for.
+ * The slice is taken over the stored range clamped into the document, which
+ * is the clamp #1765's body asks for: a range wholly past the end slices to
+ * `""`, one partly past it slices to the text it still covers (`slice` bounds
+ * the high end itself), and a negative offset is pinned at `0` (#2188).
+ * `slice` WRAPS a negative start, so a raw `{-5, 11}` compared the last five
+ * characters and passed on a snapshot of them. Clamping here, rather than at
+ * each call site, covers all three arms of `refreshRange` — the collapse arm
+ * included — and `overlayFallbackAnchors` with one rule.
  */
 export function storedRangeStillMatches(ann: Annotation, text: string): boolean {
   return (
     ann.textSnapshot === undefined ||
-    !snapshotContradicts(ann, text.slice(ann.range.from, ann.range.to))
+    !snapshotContradicts(ann, text.slice(Math.max(ann.range.from, 0), Math.max(ann.range.to, 0)))
   );
 }
 
@@ -808,7 +814,8 @@ export function storedRangeStillMatches(ann: Annotation, text: string): boolean 
  * start, so `storedRangeStillMatches` on a raw `{-5, 11}` compared the last
  * five characters against the snapshot and passed, and the anchor was minted
  * from offset 0 over text the snapshot never described. The gate therefore
- * runs on the CLAMPED range too.
+ * slices over the same clamped range (it clamps internally, so every arm that
+ * calls it is covered).
  *
  * A range WHOLLY outside the document clamps to a point at the nearer end,
  * and must: that is where the following refresh collapsed it on master, and it
@@ -825,7 +832,8 @@ export function storedRangeStillMatches(ann: Annotation, text: string): boolean 
  * anchored record.
  */
 function clampToFlatLength(range: DocumentRange, length: number): DocumentRange {
-  if (range.from >= 0 && range.to <= length) return range;
+  const inBounds = (n: number) => n >= 0 && n <= length;
+  if (inBounds(range.from) && inBounds(range.to)) return range;
   const clamp = (n: number) => toFlatOffset(Math.min(Math.max(n, 0), length));
   return { from: clamp(range.from), to: clamp(range.to) };
 }
@@ -881,10 +889,8 @@ export function refreshRange(
     // unverified mint as the dead-relRange arm below, so it takes the same
     // gate — fixing only that arm is defeated one call later (#1764).
     const text = docText();
+    if (!storedRangeStillMatches(ann, text)) return { kind: "degraded", annotation: ann };
     const range = clampToFlatLength(ann.range, text.length);
-    if (!storedRangeStillMatches({ ...ann, range }, text)) {
-      return { kind: "degraded", annotation: ann };
-    }
     const fromRel = flatOffsetToRelPos(ydoc, range.from, 0);
     const toRel = flatOffsetToRelPos(ydoc, range.to, -1);
     if (!fromRel || !toRel) return { kind: "degraded", annotation: ann };
@@ -909,8 +915,8 @@ export function refreshRange(
     // text moved while the relRange died, re-anchoring here would mint a fresh,
     // confident anchor over the wrong span and nothing would warn.
     const text = docText();
-    const range = clampToFlatLength(ann.range, text.length);
-    if (storedRangeStillMatches({ ...ann, range }, text)) {
+    if (storedRangeStillMatches(ann, text)) {
+      const range = clampToFlatLength(ann.range, text.length);
       const fromRel = flatOffsetToRelPos(ydoc, range.from, 0);
       const toRel = flatOffsetToRelPos(ydoc, range.to, -1);
       if (fromRel && toRel) {

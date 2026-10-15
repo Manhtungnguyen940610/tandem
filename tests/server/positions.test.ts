@@ -1567,6 +1567,29 @@ describe("refreshRange — a stored range past the end of the document (#2188)",
     expect(map.get(ann.id)).toBe(stored);
   });
 
+  it("the COLLAPSE arm gates a negative `from` on the clamped slice too", () => {
+    // The third arm that calls `storedRangeStillMatches`. A raw `slice(-3, 6)`
+    // over "hello " wraps to "lo ", which "matched" the snapshot, so a genuine
+    // deletion was preserved as a spurious collapse holding {-3, 6} forever.
+    doc = makeDoc("hello world");
+    const map = getAnnotationsMap(doc);
+    const anchored = anchoredRange(doc, off(6), off(11));
+    if (!anchored.ok || !anchored.fullyAnchored) throw new Error("expected a full anchor");
+    const ann = makeAnnotation({
+      id: "ann_neg_collapse",
+      range: { from: -3 as FlatOffset, to: off(6) },
+      relRange: anchored.relRange,
+      textSnapshot: "lo ",
+    });
+    map.set(ann.id, ann);
+    getOrCreateXmlText(getFragment(doc).get(0) as Y.XmlElement).delete(6, 5);
+    expect(extractText(doc)).toBe("hello ");
+
+    const refreshed = refreshRange(ann, doc, map);
+    expect(refreshed.kind).toBe("updated");
+    expect(refreshed.annotation.range).toEqual({ from: 6, to: 6 });
+  });
+
   it("a negative `from` without a snapshot clamps to 0 and anchors", () => {
     doc = makeDoc("Hello world");
     const map = getAnnotationsMap(doc);
