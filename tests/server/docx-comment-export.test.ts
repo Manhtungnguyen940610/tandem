@@ -245,9 +245,15 @@ describe("exportYDocToDocx — comment emission", () => {
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const d = docFromHtml("<p>Hello brave world</p>");
     addAnnotation(d, 6, 11, { content: "Good one" });
-    // Out-of-bounds flat range with no CRDT anchor: relRange resolution can't
-    // help, lazy re-anchoring fails, and the flat offsets exceed the document.
-    addAnnotation(d, 500, 510, { content: "Stale one", relRange: undefined });
+    // Out-of-bounds flat range with no CRDT anchor, and a snapshot the stored
+    // slice contradicts: lazy re-anchoring is refused (#1764), so the flat
+    // offsets reach the resolver still past the end. Without the snapshot the
+    // lazy arm would clamp the range to the document's end (#2188).
+    addAnnotation(d, 500, 510, {
+      content: "Stale one",
+      relRange: undefined,
+      textSnapshot: "text that is no longer there",
+    });
 
     const buffer = await exportYDocToDocx(d);
     const extracted = await extractDocxComments(buffer);
@@ -667,6 +673,9 @@ describe("exportYDocToDocx — import/export idempotency", () => {
       importSource: { author: "A", file: "f.docx", commentId: "1" },
       range: { from: toFlatOffset(9000), to: toFlatOffset(9010) },
       relRange: undefined,
+      // Contradicted, so the lazy arm refuses to re-anchor and the range stays
+      // unresolvable (without it, #2188's clamp would park it at the end).
+      textSnapshot: "text that is no longer there",
     });
     addAnnotation(d, 6, 11, {
       content: "Needs a fresh id",

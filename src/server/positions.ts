@@ -792,6 +792,45 @@ export function storedRangeStillMatches(ann: Annotation, text: string): boolean 
 }
 
 /**
+ * The stored flat range clamped into `[0, length]` (#2188). Returns `range`
+ * itself — the same object — when it is already in bounds.
+ *
+ * Both mint arms of `refreshRange` run on a stored range nothing has bounded:
+ * the client writes a user comment's range with no anchor and no snapshot, and
+ * a selection ending at the start of a trailing empty paragraph includes its
+ * separator, so once that paragraph is gone `to` is one past the end.
+ * `resolveToElement` maps any offset past the end to the end of the last
+ * element, so the arm minted a correct anchor and then returned and persisted
+ * the stale range beside it — the record a poll handed Claude — until the next
+ * refresh corrected it. Minting from the clamped range keeps the two in step.
+ *
+ * The low end is the same bug's twin, and worse: `slice` wraps a negative
+ * start, so `storedRangeStillMatches` on a raw `{-5, 11}` compared the last
+ * five characters against the snapshot and passed, and the anchor was minted
+ * from offset 0 over text the snapshot never described. The gate therefore
+ * runs on the CLAMPED range too.
+ *
+ * A range WHOLLY outside the document clamps to a point at the nearer end,
+ * and must: that is where the following refresh collapsed it on master, and it
+ * is #1764's rule for a snapshot-less collapse (`{n, n}`). Refusing it instead
+ * leaves an unanchored record holding stale offsets that a later lazy attach
+ * mints over unrelated text once the document grows past them.
+ *
+ * For every document the editor can produce, an anchor minted past the end is
+ * identical to one minted at `length`, so on those the clamp changes only the
+ * returned range. It is not identical for a fragment whose last top-level
+ * child is not an element — `resolveToElement` counts separators by index and
+ * `extractText` by emitted element — where the past-the-end mint returns null
+ * and the clamped one succeeds. That direction only turns a `degraded` into an
+ * anchored record.
+ */
+function clampToFlatLength(range: DocumentRange, length: number): DocumentRange {
+  if (range.from >= 0 && range.to <= length) return range;
+  const clamp = (n: number) => toFlatOffset(Math.min(Math.max(n, 0), length));
+  return { from: clamp(range.from), to: clamp(range.to) };
+}
+
+/**
  * A `getText` that materializes the flat projection at most once, and not at
  * all when nothing asks for it.
  *
@@ -823,7 +862,8 @@ function memoizedDocText(ydoc: Y.Doc): () => string {
  * **Both are gated on {@link storedRangeStillMatches} (#1764)**: this runs from
  * a READ path (`listAnnotationsRefreshed`), and minting a confident anchor over
  * a stored range whose snapshot no longer holds pins the record to the wrong
- * text with nothing warning.
+ * text with nothing warning. Both mint from, gate on, and persist the stored
+ * range clamped into the document ({@link clampToFlatLength}, #2188).
  *
  * `getText` is internal plumbing, not a public option — omit it and each call
  * memoizes its own. `refreshAllRanges` passes one shared getter.
@@ -840,11 +880,15 @@ export function refreshRange(
     // Lazy attachment: compute relRange from current flat offsets. Same
     // unverified mint as the dead-relRange arm below, so it takes the same
     // gate — fixing only that arm is defeated one call later (#1764).
-    if (!storedRangeStillMatches(ann, docText())) return { kind: "degraded", annotation: ann };
-    const fromRel = flatOffsetToRelPos(ydoc, ann.range.from, 0);
-    const toRel = flatOffsetToRelPos(ydoc, ann.range.to, -1);
+    const text = docText();
+    const range = clampToFlatLength(ann.range, text.length);
+    if (!storedRangeStillMatches({ ...ann, range }, text)) {
+      return { kind: "degraded", annotation: ann };
+    }
+    const fromRel = flatOffsetToRelPos(ydoc, range.from, 0);
+    const toRel = flatOffsetToRelPos(ydoc, range.to, -1);
     if (!fromRel || !toRel) return { kind: "degraded", annotation: ann };
-    const updated = { ...ann, relRange: { fromRel, toRel } };
+    const updated = { ...ann, range, relRange: { fromRel, toRel } };
     if (map) map.set(ann.id, updated);
     return { kind: "attached", annotation: updated };
   }
@@ -864,11 +908,13 @@ export function refreshRange(
     // but only when the stored range still holds its snapshot (#1764). If the
     // text moved while the relRange died, re-anchoring here would mint a fresh,
     // confident anchor over the wrong span and nothing would warn.
-    if (storedRangeStillMatches(ann, docText())) {
-      const fromRel = flatOffsetToRelPos(ydoc, ann.range.from, 0);
-      const toRel = flatOffsetToRelPos(ydoc, ann.range.to, -1);
+    const text = docText();
+    const range = clampToFlatLength(ann.range, text.length);
+    if (storedRangeStillMatches({ ...ann, range }, text)) {
+      const fromRel = flatOffsetToRelPos(ydoc, range.from, 0);
+      const toRel = flatOffsetToRelPos(ydoc, range.to, -1);
       if (fromRel && toRel) {
-        const updated: Annotation = { ...ann, relRange: { fromRel, toRel } };
+        const updated: Annotation = { ...ann, range, relRange: { fromRel, toRel } };
         if (map) map.set(ann.id, updated);
         return { kind: "repaired", annotation: updated };
       }
